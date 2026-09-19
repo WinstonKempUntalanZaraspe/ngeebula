@@ -26,6 +26,7 @@ REQUIRED_TABLES = ("sectors", "location_supply", "buffer_location", "parameters"
 PRIORITY_BASE_WEIGHT = {1: 100, 2: 10, 3: 1}
 ACTIVITY_PRIORITY_TENTHS = {1: 3, 2: 2, 3: 0}
 PHYSICAL_NIGHTS_PER_WEEK = 7
+SOLVER_VERSION = "buffer-coshare-v5"
 
 def _clean(value: Any) -> str:
     return "" if value is None else str(value).strip()
@@ -256,9 +257,15 @@ def _activity_route_and_closure(
         raise ValueError(f"Activity {activity.get('activity_id')} expands to no valid occupancy locations")
     return route, closure, {_line_of_location(loc) for loc in closure}
 
-def _co_share_pair_allowed(access_type_a: str, access_type_b: str, route_a: Set[str], route_b: Set[str]) -> bool:
+def _co_share_pair_allowed(
+    access_type_a: str,
+    access_type_b: str,
+    route_a: Set[str],
+    route_b: Set[str],
+) -> bool:
     pair = {access_type_a, access_type_b}
-    return ((access_type_a == "C" and access_type_b == "C") or pair == {"PC", "C"}) and bool(route_a & route_b)
+    legal = (access_type_a == "C" and access_type_b == "C") or pair == {"PC", "C"}
+    return legal and bool(route_a & route_b)
 
 def _validate_predecessors(activities: Mapping[str, Mapping[str, Any]]) -> None:
     graph: Dict[str, Optional[str]] = {}
@@ -365,7 +372,6 @@ def solve_schedule(
     scheduled: Dict[Tuple[str, int], cp_model.IntVar] = {}
     normal: Dict[Tuple[str, int], cp_model.IntVar] = {}
     eclo: Dict[Tuple[str, int], cp_model.IntVar] = {}
-    physical: Dict[Tuple[str, int, int], cp_model.IntVar] = {}
     local_access: Dict[Tuple[str, int, int], cp_model.IntVar] = {}
 
     for activity_id in activity_ids:
@@ -381,12 +387,6 @@ def solve_schedule(
                 model.Add(s == 0)
             if scenario == "A":
                 model.Add(e == 0)
-            pvars = []
-            for night in physical_nights:
-                var = model.NewBoolVar(f"physical__{activity_id}__w{week}__d{night}")
-                physical[activity_id, week, night] = var
-                pvars.append(var)
-            model.Add(sum(pvars) == s)
             avars = []
             for access_night in range(1, cap + 1):
                 var = model.NewBoolVar(f"accessnight__{activity_id}__w{week}__n{access_night}")
@@ -435,54 +435,49 @@ def solve_schedule(
             for access_night in range(1, cap + 1):
                 model.Add(sum(local_access[a, week, access_night] for a in ids) <= workfronts)
 
-    access_slot_to_physical: Dict[Tuple[str, str, int, int, int], cp_model.IntVar] = {}
-    for (contract, activity_type), ids in activities_by_contract_type.items():
-        cap = _as_int(projects[contract].get("number_of_maximum_access_per_week"), f"{contract}.number_of_maximum_access_per_week")
-        safe_type = activity_type or "UNKNOWN"
-        for week in weeks:
-            for access_night in range(1, cap + 1):
-                row = []
-                for night in physical_nights:
-                    link = model.NewBoolVar(f"slotmap__{contract}__{safe_type}__w{week}__n{access_night}__d{night}")
-                    access_slot_to_physical[contract, activity_type, week, access_night, night] = link
-                    row.append(link)
-                model.Add(sum(row) <= 1)
-            for night in physical_nights:
-                model.Add(sum(access_slot_to_physical[contract, activity_type, week, access_night, night] for access_night in range(1, cap + 1)) <= 1)
-            for activity_id in ids:
-                for access_night in range(1, cap + 1):
-                    for night in physical_nights:
-                        model.Add(
-                            local_access[activity_id, week, access_night] + physical[activity_id, week, night]
-                            <= 1 + access_slot_to_physical[contract, activity_type, week, access_night, night]
-                        )
-
-    location_night_used: Dict[Tuple[str, int, int], cp_model.IntVar] = {}
+    max_slots = PHYSICAL_NIGHTS_PER_WEEK
+    occupancy_slot: Dict[Tuple[str, int, str, int], cp_model.IntVar] = {}
+    group_used: Dict[Tuple[str, int, int], cp_model.IntVar] = {}
     excess_by_location_week: Dict[Tuple[str, int], cp_model.IntVar] = {}
+
     for location_id, nominal_supply in supply.items():
         ids = activities_at_location.get(location_id, [])
         if not ids:
             continue
         for week in weeks:
             used_vars = []
-            for night in physical_nights:
-                relevant = [physical[a, week, night] for a in ids]
-                used = model.NewBoolVar(f"used__{location_id}__w{week}__d{night}")
-                location_night_used[location_id, week, night] = used
+            for slot in range(1, max_slots + 1):
+                used = model.NewBoolVar(f"groupused__{location_id}__w{week}__g{slot}")
+                group_used[location_id, week, slot] = used
                 used_vars.append(used)
-                for var in relevant:
+                pm, pc, coworker, members = [], [], [], []
+                for a in ids:
+                    var = model.NewBoolVar(f"occslot__{a}__w{week}__{location_id}__g{slot}")
+                    occupancy_slot[a, week, location_id, slot] = var
+                    members.append(var)
+                    model.Add(var <= scheduled[a, week])
+                    if activity_access_type[a] == "PM":
+                        pm.append(var)
+                    elif activity_access_type[a] == "PC":
+                        pc.append(var)
+                    elif activity_access_type[a] == "C":
+                        coworker.append(var)
+                for var in members:
                     model.Add(var <= used)
-                model.Add(used <= sum(relevant))
-                pm = [physical[a, week, night] for a in ids if activity_access_type[a] == "PM"]
-                pc = [physical[a, week, night] for a in ids if activity_access_type[a] == "PC"]
-                c = [physical[a, week, night] for a in ids if activity_access_type[a] == "C"]
-                pm_sum, pc_sum, c_sum = (sum(pm) if pm else 0), (sum(pc) if pc else 0), (sum(c) if c else 0)
+                model.Add(used <= sum(members))
+                pm_sum = sum(pm) if pm else 0
+                pc_sum = sum(pc) if pc else 0
+                c_sum = sum(coworker) if coworker else 0
                 model.Add(pm_sum <= 1)
                 model.Add(pc_sum <= 1)
                 model.Add(pm_sum + pc_sum <= 1)
                 model.Add(c_sum + pc_sum + 4 * pm_sum <= 4)
+
+            for a in ids:
+                model.Add(sum(occupancy_slot[a, week, location_id, slot] for slot in range(1, max_slots + 1)) == scheduled[a, week])
+
             total_used = sum(used_vars)
-            max_excess = max(0, PHYSICAL_NIGHTS_PER_WEEK - nominal_supply)
+            max_excess = max(0, max_slots - nominal_supply)
             excess = model.NewIntVar(0, max_excess, f"excess__{location_id}__w{week}")
             model.Add(excess >= total_used - nominal_supply)
             model.Add(excess >= 0)
@@ -501,15 +496,25 @@ def solve_schedule(
         for b in activity_ids[i + 1:]:
             if not (closure[a] & closure[b]):
                 continue
-            if _co_share_pair_allowed(activity_access_type[a], activity_access_type[b], route[a], route[b]):
+            shared = route[a] & route[b]
+            if _co_share_pair_allowed(
+                activity_access_type[a],
+                activity_access_type[b],
+                route[a],
+                route[b],
+            ):
                 pair_coshare_exemptions += 1
                 for week in weeks:
                     both = model.NewBoolVar(f"coshare__{a}__{b}__w{week}")
                     model.Add(both <= scheduled[a, week])
                     model.Add(both <= scheduled[b, week])
                     model.Add(both >= scheduled[a, week] + scheduled[b, week] - 1)
-                    for night in physical_nights:
-                        model.Add(physical[a, week, night] == physical[b, week, night]).OnlyEnforceIf(both)
+                    for location_id in shared:
+                        for slot in range(1, max_slots + 1):
+                            model.Add(
+                                occupancy_slot[a, week, location_id, slot]
+                                == occupancy_slot[b, week, location_id, slot]
+                            ).OnlyEnforceIf(both)
                 continue
             pair_conflicts += 1
             for week in weeks:
@@ -596,7 +601,6 @@ def solve_schedule(
         }
 
     schedule_access: List[Dict[str, Any]] = []
-    chosen_physical_night: Dict[Tuple[str, int], int] = {}
     for activity_id in activity_ids:
         contract = activity_contract[activity_id]
         cap = _as_int(projects[contract].get("number_of_maximum_access_per_week"), f"{contract}.number_of_maximum_access_per_week")
@@ -605,8 +609,6 @@ def solve_schedule(
             if solver.Value(scheduled[activity_id, week]) != 1:
                 continue
             seq += 1
-            night = next(n for n in physical_nights if solver.Value(physical[activity_id, week, n]) == 1)
-            chosen_physical_night[activity_id, week] = night
             access_night = next(n for n in range(1, cap + 1) if solver.Value(local_access[activity_id, week, n]) == 1)
             schedule_access.append({
                 "activity_id": activity_id,
@@ -619,13 +621,16 @@ def solve_schedule(
     schedule_occupancy: List[Dict[str, Any]] = []
     for access in schedule_access:
         activity_id, week = str(access["activity_id"]), int(access["week"])
-        night = chosen_physical_night[activity_id, week]
         for location_id in sorted(route[activity_id]):
+            slot = next(
+                g for g in range(1, max_slots + 1)
+                if solver.Value(occupancy_slot[activity_id, week, location_id, g]) == 1
+            )
             schedule_occupancy.append({
                 "activity_id": activity_id,
                 "week": week,
                 "location_id": location_id,
-                "co_share_group": f"b{night}",
+                "co_share_group": f"b{slot}",
             })
 
     results_rows: List[Dict[str, Any]] = []
@@ -675,7 +680,7 @@ def solve_schedule(
         "debug": {
             "horizon_start": horizon_start.isoformat(),
             "horizon_weeks": horizon_weeks,
-            "physical_nights_per_week": PHYSICAL_NIGHTS_PER_WEEK,
+            "max_co_share_groups_per_location_week": max_slots,
         },
     }
 
