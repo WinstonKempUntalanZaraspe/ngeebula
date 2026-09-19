@@ -483,17 +483,61 @@ def _activity_route_and_closure(
 
 
 
-        reaches_interchange = any(
-            _parse_track_location(loc)[2] in interchange_hubs for loc in closure
-        )
-        if reaches_interchange:
+        # Cross-line hub closure.  The organisers' validator does NOT stop at the
+        # other line's hub tunnel/platforms: it continues outward from each
+        # interchange station by up_to_buffer_sectors sectors on the other
+        # line(s), closing those sectors and every platform they touch, on BOTH
+        # bounds (proved on the public data by A074's closure on Beta reaching
+        # SEC:BET:S13_S14 / PLAT:BET:S13 / PLAT:BET:S14).
+        sector_station_ids: Set[str] = set()
+        for row in sector_by_id.values():
+            sector_station_ids.add(_clean(row.get("from_station_id")))
+            sector_station_ids.add(_clean(row.get("to_station_id")))
+        interchange_stations = interchange_hubs & sector_station_ids
 
+        touched_hubs: Set[str] = set()
+        for loc in closure:
+            kind, line, middle, _bound = _parse_track_location(loc)
+            if kind == "PLAT":
+                if middle in interchange_stations:
+                    touched_hubs.add(middle)
+            else:
+                row = sector_by_id.get(f"SEC:{line}:{middle}")
+                if row is not None:
+                    for end in (row.get("from_station_id"), row.get("to_station_id")):
+                        if _clean(end) in interchange_stations:
+                            touched_hubs.add(_clean(end))
 
-
-            for location_id in all_location_ids:
-                _kind, line, middle, _bound = _parse_track_location(location_id)
-                if line != start_line and middle in interchange_hubs:
-                    closure.add(location_id)
+        if touched_hubs:
+            # sectors touching the hub station are at distance 1, so a buffer of
+            # n sectors spans n-1 further rows on each side of that pair.
+            extra = max(buffer_size - 1, 0)
+            for other_line, other_rows in sectors_by_line.items():
+                if other_line == start_line:
+                    continue
+                ordered = sorted(other_rows, key=lambda r: int(r["seq"]))
+                keep_seqs: Set[int] = set()
+                for hub in touched_hubs:
+                    adjacent = [
+                        int(r["seq"])
+                        for r in ordered
+                        if _clean(r.get("from_station_id")) == hub
+                        or _clean(r.get("to_station_id")) == hub
+                    ]
+                    if not adjacent:
+                        continue
+                    low = min(adjacent) - extra
+                    high = max(adjacent) + extra
+                    keep_seqs.update(
+                        int(r["seq"]) for r in ordered if low <= int(r["seq"]) <= high
+                    )
+                selected = [r for r in ordered if int(r["seq"]) in keep_seqs]
+                if not selected:
+                    continue
+                for other_bound in ("EB", "WB"):
+                    closure |= _locations_for_sector_rows(
+                        selected, other_line, other_bound
+                    )
 
 
     closure &= all_location_ids
@@ -1000,6 +1044,17 @@ def solve_schedule(
                 continue
 
             pair_conflicts += 1
+            # Live (750 V) closures are week-level in the organisers' validator: any
+            # other activity inside one in the same week is flagged whatever night
+            # it is on (confirmed on the public data, A074 vs A039/A065). Other
+            # closures are night-level: colliding non-partners take different nights.
+            if (
+                _normalise_nature_label(activity_nature[a]).startswith("live")
+                or _normalise_nature_label(activity_nature[b]).startswith("live")
+            ):
+                for week in weeks:
+                    model.Add(scheduled[a, week] + scheduled[b, week] <= 1)
+                continue
             for week in weeks:
                 for night in physical_nights:
                     model.Add(

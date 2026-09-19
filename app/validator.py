@@ -312,17 +312,58 @@ class _Geometry:
         is_live = nature.lower() == "live" or nature in self.mirror_natures
         if is_live:
             closure |= {_swap_bound(loc) for loc in closure}
-            touches_hub = any(self._is_hub_location(loc) for loc in closure)
-            if touches_hub:
-                for other_line in self.by_line:
+            # Cross-line hub closure: the organisers' validator continues the
+            # buffer outward from each interchange station on the OTHER line(s)
+            # by up_to_buffer_sectors sectors, closing those sectors and the
+            # platforms of every station they touch, on both bounds.
+            touched_hubs = self._touched_hub_stations(closure)
+            if touched_hubs:
+                extra = max(buffer_size - 1, 0)
+                for other_line, other_rows in self.by_line.items():
                     if other_line == line:
                         continue
+                    keep: Set[int] = set()
+                    for hub in touched_hubs:
+                        adjacent = [
+                            _i(r.get("seq"), "seq", 0)
+                            for r in other_rows
+                            if _s(r.get("from_station_id")) == hub
+                            or _s(r.get("to_station_id")) == hub
+                        ]
+                        if not adjacent:
+                            continue
+                        low_h, high_h = min(adjacent) - extra, max(adjacent) + extra
+                        keep.update(
+                            _i(r.get("seq"), "seq", 0)
+                            for r in other_rows
+                            if low_h <= _i(r.get("seq"), "seq", 0) <= high_h
+                        )
+                    selected = [
+                        r for r in other_rows if _i(r.get("seq"), "seq", 0) in keep
+                    ]
                     for bnd in self.bounds:
-                        for mid in self.hub_middles:
-                            closure.add(f"SEC:{other_line}:{mid}:{bnd}")
-                        for station in self.hub_stations:
-                            closure.add(f"PLAT:{other_line}:{station}:{bnd}")
+                        closure |= self._locs(selected, other_line, bnd)
         return route, closure & self.locations
+
+    def _touched_hub_stations(self, closure: Set[str]) -> Set[str]:
+        """Interchange stations that a closure set reaches (platform or sector end)."""
+        hubs: Set[str] = set()
+        for loc in closure:
+            parts = loc.split(":")
+            if len(parts) != 4:
+                continue
+            kind, lin, middle, _bnd = parts
+            if kind == "PLAT":
+                if middle in self.hub_stations:
+                    hubs.add(middle)
+                continue
+            row = self.sector_by_id.get(f"SEC:{lin}:{middle}")
+            if row is None:
+                continue
+            for end in (row.get("from_station_id"), row.get("to_station_id")):
+                if _s(end) in self.hub_stations:
+                    hubs.add(_s(end))
+        return hubs
 
     def _is_hub_location(self, location_id: str) -> bool:
         parts = location_id.split(":")
@@ -513,20 +554,19 @@ def validate(
                 gb = occ_by_aw.get((b, week), {})
                 if any(ga.get(loc) == group for loc, group in gb.items()):
                     continue  # partners: they share a possession somewhere -> exempt
+                # Live (750 V) closures are week-level in the organisers' validator
+                # (confirmed on the public data, A074 vs A039/A065, 19 Sep 2026):
+                # anything inside one in the same week is flagged. Other closures
+                # are night-level, the night being the co_share_group label.
                 nights_a, nights_b = set(ga.values()), set(gb.values())
-                bad = [
-                    loc for loc, group in gb.items()
-                    if loc in geo.closure.get(a, set()) and group in nights_a
-                ] + [
-                    loc for loc, group in ga.items()
-                    if loc in geo.closure.get(b, set()) and group in nights_b
-                ]
-                if bad:
-                    V(
-                        "closure",
-                        f"wk{week}: {a} and {b} on the same night inside each other's "
-                        f"closure at {sorted(set(bad))[:3]}",
-                    )
+                live_a = geo.nature_of.get(a, "").lower().startswith("live")
+                live_b = geo.nature_of.get(b, "").lower().startswith("live")
+                bad_b = [loc for loc, g in gb.items() if loc in geo.closure.get(a, set()) and (live_a or g in nights_a)]
+                bad_a = [loc for loc, g in ga.items() if loc in geo.closure.get(b, set()) and (live_b or g in nights_b)]
+                if bad_a:
+                    V("closure", f"wk{week}: {a} inside closure of ['{b}'] at {sorted(set(bad_a))[:4]}")
+                if bad_b:
+                    V("closure", f"wk{week}: {b} inside closure of ['{a}'] at {sorted(set(bad_b))[:4]}")
 
     # ---- rule 6/7 weekly cap + workfronts --------------------------------- #
     by_ctw: Dict[Tuple[str, str, int], Dict[str, Set[str]]] = defaultdict(

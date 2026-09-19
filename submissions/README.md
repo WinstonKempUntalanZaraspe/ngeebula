@@ -5,9 +5,9 @@ instance `PS1/01_data`, via `POST /api/solve`, on 18 Sep 2026.
 
 | Scenario | Solver status | Our validator | Score (README 2.5 formula) | Late contracts |
 | --- | --- | --- | --- | --- |
-| A | OPTIMAL | feasible, 0 violations | 25.2 | C006 14 days, C010 7 days (both Priority 3) |
-| B | OPTIMAL | feasible, 0 violations | 30.0 (6 ECLO nights) | none |
-| C | OPTIMAL | feasible, 0 violations | 25.2 | C006, C010 (both Priority 3) |
+| A | OPTIMAL | feasible, 0 violations | 32.2 | Priority 3 only (28 days total) |
+| B | FEASIBLE (90 s) | feasible, 0 violations | 82.0 (8 ECLO, 6 excess) | none |
+| C | FEASIBLE (90 s) | feasible, 0 violations | 249.9 (24 excess) | Priority 3 only (49 days) |
 
 The organisers' sample for Scenario A scores 48.3 by the same formula.
 
@@ -15,3 +15,5 @@ Regenerate: run the backend (`run.ps1` or `run.sh`) and POST the 8 CSVs to
 `/api/solve?wait=true` with `scenario=A|B|C`, or use the CLI:
 `py app\solver.py --data-dir <8 CSVs> --scenario A --output-dir submissions\A --time-limit 60`.
 Output is deterministic (single worker), so re-runs are byte-identical.
+
+Regenerated 19 Sep 2026 after two rule corrections learned from the organisers' validator: a Live closure continues 2 sectors onto the other line at an interchange, and Live closures apply for the whole week.
