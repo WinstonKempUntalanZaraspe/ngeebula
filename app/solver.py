@@ -26,7 +26,7 @@ REQUIRED_TABLES = ("sectors", "location_supply", "buffer_location", "parameters"
 PRIORITY_BASE_WEIGHT = {1: 100, 2: 10, 3: 1}
 ACTIVITY_PRIORITY_TENTHS = {1: 3, 2: 2, 3: 0}
 PHYSICAL_NIGHTS_PER_WEEK = 7
-SOLVER_VERSION = "validator-closure-v6"
+SOLVER_VERSION = "validator-coshare-v7"
 
 def _clean(value: Any) -> str:
     return "" if value is None else str(value).strip()
@@ -268,18 +268,10 @@ def _co_share_pair_allowed(
     access_type_b: str,
     route_a: Set[str],
     route_b: Set[str],
-    closure_a: Set[str],
-    closure_b: Set[str],
 ) -> bool:
     pair = {access_type_a, access_type_b}
     legal = (access_type_a == "C" and access_type_b == "C") or pair == {"PC", "C"}
-    if not legal:
-        return False
-    shared = route_a & route_b
-    if not shared:
-        return False
-    intrusion = (route_a & closure_b) | (route_b & closure_a)
-    return not (intrusion - shared)
+    return legal and bool(route_a & route_b)
 
 def _validate_predecessors(activities: Mapping[str, Mapping[str, Any]]) -> None:
     graph: Dict[str, Optional[str]] = {}
@@ -516,8 +508,6 @@ def solve_schedule(
                 activity_access_type[b],
                 route[a],
                 route[b],
-                closure[a],
-                closure[b],
             ):
                 pair_coshare_exemptions += 1
                 for week in weeks:
