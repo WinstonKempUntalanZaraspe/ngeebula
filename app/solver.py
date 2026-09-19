@@ -761,25 +761,50 @@ def solve_schedule(
     pair_coshare_exemptions = 0
     for i, a in enumerate(activity_ids):
         for b in activity_ids[i + 1 :]:
-            collision = closure[a] & closure[b]
-            if not collision:
+            shared_worksite = route[a] & route[b]
+            a_inside_b_closure = route[a] & closure[b]
+            b_inside_a_closure = route[b] & closure[a]
+            closure_collision = closure[a] & closure[b]
+            if not (a_inside_b_closure or b_inside_a_closure or closure_collision):
                 continue
-            if _co_share_pair_allowed(
+            co_share_allowed = _co_share_pair_allowed(
                 activity_access_type[a],
                 activity_access_type[b],
                 route[a],
                 route[b],
                 closure[a],
                 closure[b],
-            ):
+            )
+            outside_shared_worksite = (
+                (a_inside_b_closure | b_inside_a_closure) - shared_worksite
+            )
+            if co_share_allowed and not outside_shared_worksite:
                 pair_coshare_exemptions += 1
                 continue
             pair_conflicts += 1
             for week in weeks:
-                for night in physical_nights:
-                    model.Add(
-                        physical[a, week, night] + physical[b, week, night] <= 1
-                    )
+                model.Add(scheduled[a, week] + scheduled[b, week] <= 1)
+    closure_conflict_pairs: List[Tuple[str, str]] = []
+    for i, a in enumerate(activity_ids):
+        for b in activity_ids[i + 1 :]:
+            shared_worksite = route[a] & route[b]
+            a_inside_b_closure = route[a] & closure[b]
+            b_inside_a_closure = route[b] & closure[a]
+            if not (a_inside_b_closure or b_inside_a_closure):
+                continue
+            co_share_allowed = _co_share_pair_allowed(
+                activity_access_type[a],
+                activity_access_type[b],
+                route[a],
+                route[b],
+                closure[a],
+                closure[b],
+            )
+            outside_shared_worksite = (
+                (a_inside_b_closure | b_inside_a_closure) - shared_worksite
+            )
+            if not (co_share_allowed and not outside_shared_worksite):
+                closure_conflict_pairs.append((a, b))
     eclo_window_start: Dict[str, cp_model.IntVar] = {}
     if scenario == "C":
         all_lines = sorted({line for lines in affected_lines.values() for line in lines})
@@ -942,6 +967,19 @@ def solve_schedule(
                     "co_share_group": f"b{night}",
                 }
             )
+    for a, b in closure_conflict_pairs:
+        for week in weeks:
+            if (
+                solver.Value(scheduled[a, week]) == 1
+                and solver.Value(scheduled[b, week]) == 1
+            ):
+                overlap = sorted(
+                    (route[a] & closure[b]) | (route[b] & closure[a])
+                )
+                raise RuntimeError(
+                    f"Internal closure-safety failure in week {week}: "
+                    f"{a} conflicts with {b} at {overlap}"
+                )
     results_rows: List[Dict[str, Any]] = []
     for contract in sorted(projects):
         if contract not in contract_end_week:
