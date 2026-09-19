@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 
 import streamlit as st
 
-from ui import state
+from ui import errors, state
 from ui.state import (
     INSTANCE_FILES,
     SAMPLE_DIR,
@@ -21,28 +21,78 @@ from ui.state import (
 
 
 def _accept(incoming: List[Any]) -> None:
-    """Merge newly chosen files into what we already hold, then re-check."""
+    """Merge newly chosen files into what we already hold, then re-check.
+
+    The only checks here are the cheap ones: is the file one of the 8, is it a
+    readable CSV at all, and does its header row carry the columns the
+    scheduler needs. Everything deeper is the scheduler's own job, and comes
+    back through ``ui.errors``.
+    """
     files: Dict[str, bytes] = dict(st.session_state["files"])
     bad: Dict[str, str] = dict(st.session_state["bad_headers"])
+    codes: Dict[str, str] = dict(st.session_state["file_problems"])
     extras: List[str] = []
+    seen: List[str] = []
+    duplicates: List[str] = []
 
     for uploaded in incoming:
         name = state.canonical_name(uploaded.name)
         if name not in INSTANCE_FILES:
             extras.append(str(uploaded.name).replace("\\", "/").split("/")[-1])
             continue
+        if name in seen:
+            duplicates.append(name)  # keep the last one chosen, say so below
+        seen.append(name)
+
         blob = uploaded.getvalue()
+        if not blob.strip():
+            files.pop(name, None)
+            bad[name] = "the file is empty"
+            codes[name] = "NOT_CSV"
+            continue
+        header = state.header_of(blob)
+        if len(header) < 2:
+            files.pop(name, None)
+            bad[name] = "no readable comma-separated header row — is this really a CSV?"
+            codes[name] = "NOT_CSV"
+            continue
+
         missing = state.missing_columns(name, blob)
         if missing:
             files.pop(name, None)
             bad[name] = "header is missing: " + ", ".join(missing)
+            codes[name] = "BAD_HEADER"
         else:
             files[name] = blob
             bad.pop(name, None)
+            codes.pop(name, None)
 
     st.session_state["files"] = files
     st.session_state["bad_headers"] = bad
+    st.session_state["file_problems"] = codes
     st.session_state["extras"] = extras
+    st.session_state["duplicates"] = sorted(set(duplicates))
+
+
+def _horizon_problem(files: Dict[str, bytes]) -> str:
+    """``""`` when the planning period reads cleanly, else why it does not."""
+    blob = files.get("06_PARAMETERS.csv")
+    if blob is None:
+        return ""
+    parameters = {
+        r.get("key", "").strip().lower(): r.get("value", "").strip()
+        for r in state.read_rows(blob)
+    }
+    if "horizon_start" not in parameters:
+        return "there is no `horizon_start` row"
+    if state.parse_iso(parameters.get("horizon_start")) is None:
+        return f"`horizon_start` is not a date: {parameters.get('horizon_start')!r}"
+    weeks = parameters.get("horizon_weeks", "")
+    if not weeks:
+        return "there is no `horizon_weeks` row"
+    if state.as_number(weeks) < 1:
+        return f"`horizon_weeks` is not a whole number above zero: {weeks!r}"
+    return ""
 
 
 def _load_sample() -> None:
@@ -139,7 +189,10 @@ def render() -> None:
         st.markdown(f"{mark} &nbsp; `{name}` &nbsp; :gray[{detail}]")
 
     st.space("small")
-    if ok_count == 8:
+    horizon_problem = _horizon_problem(files) if "06_PARAMETERS.csv" in files else ""
+    ready = ok_count == 8 and not horizon_problem
+
+    if ready:
         st.success("8 of 8 files ready.", icon=":material/check_circle:")
     else:
         st.info(
@@ -147,19 +200,45 @@ def render() -> None:
             icon=":material/info:",
         )
 
+    # ---- say exactly what is wrong, and what to do about it ----
+    for code in sorted({c for n, c in st.session_state["file_problems"].items() if n in bad}):
+        title, cause, fix = errors.entry(code)
+        with st.container(border=True):
+            st.markdown(f"**{title}**")
+            st.write(cause)
+            st.markdown(f"**Fix:** {fix}")
+    if ok_count < 8 and not bad:
+        title, cause, fix = errors.entry("MISSING_FILE")
+        st.caption(f"{cause} {fix}")
+    if horizon_problem:
+        title, cause, fix = errors.entry("BAD_HORIZON")
+        st.error(f"**{title}** — {horizon_problem}.", icon=":material/error:")
+        with st.container(border=True):
+            st.write(cause)
+            st.markdown(f"**Fix:** {fix}")
+
+    duplicates = st.session_state.get("duplicates") or []
+    if duplicates:
+        title, cause, fix = errors.entry("DUPLICATE_FILE")
+        st.warning(
+            f"**{title}**: {', '.join(duplicates)}. {cause} {fix}",
+            icon=":material/warning:",
+        )
+
     extras = st.session_state["extras"]
     if extras:
         shown = ", ".join(extras[:6]) + ("…" if len(extras) > 6 else "")
+        title, cause, fix = errors.entry("BAD_FILENAME")
         st.warning(
             f"Ignored {len(extras)} file{'' if len(extras) == 1 else 's'} that "
-            f"{'is' if len(extras) == 1 else 'are'} not one of the 8: {shown}",
+            f"{'is' if len(extras) == 1 else 'are'} not one of the 8: {shown}. {fix}",
             icon=":material/warning:",
         )
     if st.session_state["problem"]:
         st.error(st.session_state["problem"], icon=":material/error:")
 
     # ---- what is in these files ----
-    if ok_count == 8:
+    if ready:
         summary = _summary(files)
         st.space("medium")
         st.subheader("What is in these files")
@@ -198,7 +277,7 @@ def render() -> None:
         if st.button(
             "Next: choose rules",
             type="primary",
-            disabled=ok_count < 8,
+            disabled=not ready,
             icon=":material/arrow_forward:",
         ):
             state.go("rules")

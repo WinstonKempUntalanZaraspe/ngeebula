@@ -37,10 +37,17 @@ from .grid_helpers import (
     week_range_label,
     week_start,
 )
+from ui.theme import (
+    AXIS_FONT_PX,
+    CHART_FONT_PX,
+    HEAT_ROW_PX,
+    MARKER_PX,
+    body_color,
+)
 
 MAX_ROWS = 100
-_ROW_PX = 22
-_CHROME_PX = 120
+_ROW_PX = HEAT_ROW_PX
+_CHROME_PX = 130
 _GROUP_PREFIX = "── "
 
 #: Legend swatches: colour AND a glyph, so "full" / "over" never read on hue alone.
@@ -116,7 +123,7 @@ def render_heatmap(result: Mapping[str, Any], weeks: list[int], key: str) -> str
             )
 
     # --------------------------------------------------------- the figure
-    size = max(9, min(22, round(460 / max(1, len(weeks)))))
+    size = max(MARKER_PX, min(26, round(640 / max(1, len(weeks)))))
     fig = go.Figure()
     for level in sorted(cells):
         bucket = cells[level]
@@ -130,9 +137,10 @@ def render_heatmap(result: Mapping[str, Any], weeks: list[int], key: str) -> str
                 unselected=dict(marker=dict(opacity=1)),
                 text=bucket["t"],
                 textposition="middle center",
-                textfont=dict(size=10, color="#FFFFFF"),
+                textfont=dict(size=CHART_FONT_PX - 4, color="#FFFFFF"),
                 customdata=bucket["cd"],
                 hovertext=bucket["h"],
+                hoverlabel=dict(font=dict(size=CHART_FONT_PX)),
                 hovertemplate="%{hovertext}<extra></extra>",
                 showlegend=False,
             )
@@ -140,22 +148,40 @@ def render_heatmap(result: Mapping[str, Any], weeks: list[int], key: str) -> str
 
     lo, hi = min(weeks), max(weeks)
     fig.update_layout(
-        margin=dict(l=8, r=16, t=8, b=8),
-        height=max(300, min(1800, _CHROME_PX + _ROW_PX * len(labels))),
+        margin=dict(l=12, r=20, t=12, b=12),
+        height=max(320, min(2400, _CHROME_PX + _ROW_PX * len(labels))),
+        font=dict(size=CHART_FONT_PX, color=body_color()),
         hovermode="closest",
+        hoverlabel=dict(font=dict(size=CHART_FONT_PX)),
         dragmode=False,
         showlegend=False,
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
     )
+    # How many weeks can carry a written header before they run into each
+    # other. Every week still gets its own gridline and its own hover text;
+    # this only thins out the WRITING, which is what makes a 30-week range
+    # readable on a 1024 px laptop.
+    step = 1 if len(weeks) <= 10 else 2 if len(weeks) <= 20 else 3
     fig.update_xaxes(
         range=[lo - 0.6, hi + 0.6],
         tickmode="array",
         tickvals=weeks,
-        ticktext=[f"{w}<br>{fmt_day_month(week_start(horizon, w))}" for w in weeks],
+        ticktext=[
+            # Two upright lines: the Monday's date, then the week number under
+            # it — "18 Jan / W3". Plotly bottom-aligns tick text, so keeping
+            # the week number on the last line puts every "W" on one row.
+            f"{fmt_day_month(week_start(horizon, w))}<br>W{w}"
+            if index % step == 0
+            else ""
+            for index, w in enumerate(weeks)
+        ],
+        tickangle=0,
+        tickfont=dict(size=AXIS_FONT_PX),
+        ticklabelstandoff=8,
         side="top",
         showgrid=True,
-        gridcolor="rgba(136,142,150,0.16)",
+        gridcolor="rgba(136,142,150,0.20)",
         zeroline=False,
         fixedrange=True,
         title=None,
@@ -169,11 +195,15 @@ def render_heatmap(result: Mapping[str, Any], weeks: list[int], key: str) -> str
         fixedrange=True,
         title=None,
         automargin=True,
-        tickfont=dict(size=11),
+        tickfont=dict(size=AXIS_FONT_PX),
     )
 
     legend = " · ".join(
         f"{_LEGEND_SWATCH[level]} {word}" for level, word in enumerate(HEAT_WORDS)
+    )
+    st.markdown(
+        "**Each square is one track spot for one week. "
+        "Click a square to see which jobs are booked in it.**"
     )
     st.caption(
         f"{legend}. The number is bookings that week; "
@@ -191,7 +221,8 @@ def render_heatmap(result: Mapping[str, Any], weeks: list[int], key: str) -> str
         on_select="rerun",
         selection_mode="points",
         key=key,
-        config={"displayModeBar": False, "scrollZoom": False},
+        width="stretch",
+        config={"displayModeBar": False, "scrollZoom": False, "responsive": True},
     )
 
     cell = _clicked_cell(event, set(weeks))

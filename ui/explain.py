@@ -39,7 +39,7 @@ def render_explain(result: Mapping[str, Any], activity_id: str) -> None:
     priority = num(contract.get("contract_priority")) if contract else 0
 
     # ---------------------------------------------------------------- head
-    st.markdown(f"##### Job {activity_id} &nbsp; {_badge(priority)}")
+    st.markdown(f"#### Job {activity_id} &nbsp; {_badge(priority)}")
     if contract is not None:
         description = text(contract.get("contract_description"))
         st.caption(
@@ -54,7 +54,7 @@ def render_explain(result: Mapping[str, Any], activity_id: str) -> None:
         return
 
     # ------------------------------------------------- why it is where it is
-    st.markdown("**Why it is where it is**")
+    st.markdown("##### Why it is where it is")
     explanations = result.get("explanations")
     reasons = explanations.get(activity_id) if isinstance(explanations, Mapping) else None
     if isinstance(reasons, str):
@@ -65,7 +65,7 @@ def render_explain(result: Mapping[str, Any], activity_id: str) -> None:
         st.caption("No explanation was returned for this job.")
 
     # ------------------------------------------------------------- the job
-    st.markdown("**The job**")
+    st.markdown("##### The job")
     facts = [
         ("From", location_label_with_line(activity.get("start_location_id"), idx.line_names)),
         ("To", location_label_with_line(activity.get("end_location_id"), idx.line_names)),
@@ -90,7 +90,7 @@ def render_explain(result: Mapping[str, Any], activity_id: str) -> None:
     st.markdown("\n".join(f"- **{name}** — {value}" for name, value in facts))
 
     # -------------------------------------------------------- when it works
-    st.markdown("**When it works**")
+    st.markdown("##### When it works")
     nights = idx.access_by_activity.get(activity_id, [])
     if nights:
         st.markdown(
@@ -104,7 +104,7 @@ def render_explain(result: Mapping[str, Any], activity_id: str) -> None:
         st.caption("No nights were scheduled for this job.")
 
     # ------------------------------------------------------ spots it books
-    st.markdown("**Spots it books**")
+    st.markdown("##### Spots it books")
     occupancy = idx.occupancy_by_activity.get(activity_id, [])
     spots: list[str] = []
     for row in occupancy:
@@ -119,7 +119,7 @@ def render_explain(result: Mapping[str, Any], activity_id: str) -> None:
         st.caption("No spots were booked for this job.")
 
     # ------------------------------------------------ shares possessions with
-    st.markdown("**Shares possessions with**")
+    st.markdown("##### Shares possessions with")
     sharers: dict[str, set[int]] = {}
     for mine in occupancy:
         week = num(mine.get("week"))
@@ -143,7 +143,7 @@ def render_explain(result: Mapping[str, Any], activity_id: str) -> None:
         st.caption("Nobody else — it has its possessions to itself.")
 
     # ---------------------------------------------------- contract outcome
-    st.markdown("**Contract outcome**")
+    st.markdown("##### Contract outcome")
     number = text(contract.get("contract_number")) if contract else ""
     late_days, late_text = late_label(idx.result_by_contract.get(number))
     planned = text(contract.get("planned_completion_date")) if contract else ""

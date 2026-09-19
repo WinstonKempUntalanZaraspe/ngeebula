@@ -128,7 +128,7 @@ def _metrics(result: Dict[str, Any], rows: List[Dict[str, Any]]) -> None:
 def _score_breakdown(result: Dict[str, Any]) -> None:
     """Where the score comes from. Display only — the total is the reported one."""
     scores = result["report"]["soft_scores"]
-    st.markdown("**Where the score comes from**")
+    st.markdown("##### Where the score comes from")
     st.table(
         pd.DataFrame(
             [
@@ -165,7 +165,7 @@ def _score_breakdown(result: Dict[str, Any]) -> None:
 
 
 def _downloads() -> None:
-    st.markdown("**Download the schedule**")
+    st.markdown("##### Download the schedule")
     st.caption("The 3 files the official validator reads.")
     csvs: Dict[str, bytes] = st.session_state["csvs"]
     for name in SUBMISSION_FILES:
@@ -183,7 +183,7 @@ def _downloads() -> None:
 
 
 def _contracts_table(rows: List[Dict[str, Any]]) -> None:
-    st.markdown("**Contracts, most important first**")
+    st.markdown("##### Contracts, most important first")
     st.dataframe(
         pd.DataFrame(
             [
@@ -301,7 +301,7 @@ def render() -> None:
     if not report["feasible"]:
         st.space("medium")
         with st.container(border=True):
-            st.markdown("**Rules broken**")
+            st.markdown("##### Rules broken")
             st.caption(
                 "Reported by the checker. Each line names the rule and what it found."
             )
@@ -312,7 +312,7 @@ def render() -> None:
     if warnings:
         st.space("medium")
         with st.container(border=True):
-            st.markdown("**Worth knowing**")
+            st.markdown("##### Worth knowing")
             for warning in warnings:
                 st.markdown(f"- {warning}")
 
@@ -327,17 +327,21 @@ def render() -> None:
     with st.container(border=True):
         _contracts_table(rows)
 
+    # The two grids get the full width of the page: at 2 AM on a laptop the old
+    # 3:1 split squeezed the week columns until the labels were unreadable. The
+    # explain panel now sits underneath, where it also has room to breathe.
     st.space("medium")
     with st.container(border=True):
         weeks = _week_range(int(result["instance"]["horizon_weeks"]))
-        grid_area, explain_area = st.columns([3, 1], gap="medium")
-        with grid_area:
-            picked = _grids(result, weeks)
-        with explain_area:
-            if picked and picked != st.session_state["selected_activity"]:
-                st.session_state["selected_activity"] = picked
-                st.rerun()
-            _explain(result)
+        picked = _grids(result, weeks)
+
+    if picked and picked != st.session_state["selected_activity"]:
+        st.session_state["selected_activity"] = picked
+        st.rerun()
+
+    st.space("medium")
+    with st.container(border=True):
+        _explain(result)
 
     st.space("medium")
     with st.container(horizontal=True, horizontal_alignment="distribute"):

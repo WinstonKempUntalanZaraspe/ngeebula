@@ -99,6 +99,44 @@ otherwise. If a run comes back with the **out of time** screen, raise the limit
 
 ---
 
+## Cloud Run settings
+
+Google Cloud Run's defaults are too small for this app. The scheduler is a
+CP-SAT search: its memory grows the longer it searches, and Scenario C builds a
+bigger model than A or B. Measured locally on the public PS1 instance with a
+60-second limit, the solve alone peaks at **~350 MB (A)** and **~400 MB (C)**,
+before Streamlit's own ~200 MB. The default **512 MiB** container is therefore
+killed mid-solve.
+
+Set these on the service (Edit & deploy new revision):
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| **Memory** | **2 GiB minimum** | 512 MiB is killed during Scenario C. 2 GiB leaves headroom for the solve, Streamlit, and one extra viewer. |
+| **CPU** | 1 | The solver is pinned to a single worker for deterministic output (CLAUDE.md §12), so extra CPUs do not speed it up. |
+| **Request timeout** | 600 s | A 300-second solve plus the wait margin must not be cut off by the proxy. |
+| **Session affinity** | **On** | Streamlit holds each viewer's files and results in that server's memory. Without affinity a reconnect can land on another instance and start from an empty step 1. |
+| **Concurrency** | 1 to 4 | Each concurrent solve is its own child process with its own few hundred MB. Above 4 an instance runs out of memory even at 2 GiB. |
+| Min instances | 1 (optional) | Avoids a cold start, which on this image is slow enough to look broken. |
+
+The solve runs in a **separate child process** (`ui/run.py`), so if the
+container does run out of memory the kernel kills the child, not the server: the
+app stays up and shows the out-of-memory screen instead of silently restarting.
+
+### Known symptoms
+
+| What the controller sees | What it actually is | Fix |
+| --- | --- | --- |
+| **Back on step 1, no error message**, files gone, usually on Scenario C | The container ran **out of memory** mid-solve. The server restarted, the websocket reconnected into a fresh session, and the session state (including the 8 files) was gone. | Memory 2 GiB or more. The app now also detects this and shows a red "your previous run was lost" banner on the reloaded page. |
+| "OUT OF MEMORY: the scheduler was stopped by the server" | Same cause, but caught: the child process was killed and the app survived. | Memory 2 GiB or more, or lower the time limit. |
+| "The scheduler did not finish within the wait window" | The child ran past the time limit plus a 120-second grace period — usually a container short of CPU or swapping. | CPU 1 (not fractional), memory 2 GiB, lower the time limit. |
+| "OUT OF TIME — the scheduler ran out of time" | Normal: the solver hit the limit you chose without proving an answer. | Raise the limit (max 300 s), or try Scenario B or C. |
+| "The scheduler crashed (exit code N)" | An unexpected error in the solve. The last lines of its log are on screen. | Re-run; if it repeats, check the 8 files are unedited. |
+| Request cut off around 5 minutes | Cloud Run request timeout left at its 300-second default. | Request timeout 600 s. |
+| A second viewer's run wipes out the first | Session affinity off, or concurrency too high for the memory. | Session affinity on, concurrency 1 to 4. |
+
+---
+
 ## The FastAPI backend
 
 `app/main.py` is still there and still works — it is the API contract in

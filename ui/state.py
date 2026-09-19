@@ -135,6 +135,7 @@ def init() -> None:
     st.session_state.setdefault("files", {})           # official name -> bytes
     st.session_state.setdefault("bad_headers", {})     # official name -> why it was rejected
     st.session_state.setdefault("extras", [])          # names that are not one of the 8
+    st.session_state.setdefault("duplicates", [])      # official names loaded twice at once
     st.session_state.setdefault("problem", None)
     st.session_state.setdefault("uploader_nonce", 0)
     st.session_state.setdefault("scenario", "A")
@@ -142,6 +143,8 @@ def init() -> None:
     st.session_state.setdefault("job", None)           # the finished run_pipeline body
     st.session_state.setdefault("csvs", {})            # output file name -> bytes
     st.session_state.setdefault("selected_activity", None)
+    st.session_state.setdefault("run_in_progress", False)  # a solve is on screen right now
+    st.session_state.setdefault("file_problems", {})    # official name -> catalogue code
 
 
 def go(phase: str) -> None:
@@ -154,7 +157,9 @@ def clear_files() -> None:
     st.session_state["files"] = {}
     st.session_state["bad_headers"] = {}
     st.session_state["extras"] = []
+    st.session_state["duplicates"] = []
     st.session_state["problem"] = None
+    st.session_state["file_problems"] = {}
     st.session_state["uploader_nonce"] += 1  # resets the file_uploader widget
 
 

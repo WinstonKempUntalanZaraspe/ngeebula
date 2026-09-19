@@ -1,7 +1,10 @@
 # Dark by default — the control-room look, matching the React app's
 # [data-theme="dark"] palette in frontend/src/index.css.
-# Viewers can switch to light from Streamlit's own Settings menu (the ⋮ button,
-# top right); Streamlit derives a matching light palette from these tokens.
+#
+# Only a single [theme] section is defined on purpose. The in-app "Night / Day"
+# switch (ui/theme.py) rewrites these values at runtime, so a [theme.light] /
+# [theme.dark] pair would shadow what the switch sets and make it a no-op.
+# Type is sized for a works controller reading a laptop at arm's length at 2 AM.
 
 [theme]
 base = "dark"
@@ -10,6 +13,10 @@ backgroundColor = "#0f1115"
 secondaryBackgroundColor = "#181b21"
 textColor = "#e8eaea"
 font = "sans-serif"
+baseFontSize = 17
+headingFontSizes = ["34px", "27px", "22px", "19px", "17px", "16px"]
+headingFontWeights = [700, 700, 600, 600, 600, 600]
+baseRadius = "8px"
 
 [server]
 port = 8080

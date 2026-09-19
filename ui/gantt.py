@@ -26,7 +26,6 @@ from .grid_helpers import (
     fmt_day_month,
     late_label,
     num,
-    priority_color,
     rows,
     sorted_contracts,
     text,
@@ -36,19 +35,32 @@ from .grid_helpers import (
     week_range_label,
     week_start,
 )
+from ui.theme import (
+    AXIS_FONT_PX,
+    CHART_FONT_PX,
+    CONTRACT_ROW_PX,
+    JOB_ROW_PX,
+    LEGEND_FONT_PX,
+    MARKER_PX,
+    body_color,
+    is_dark,
+)
 
-_ROW_PX = 26
-_CHROME_PX = 110
-_LATE_BAR = "rgba(193,63,78,0.28)"
-_OK_BAR = "rgba(136,142,150,0.26)"
+_CHROME_PX = 150  # week headers on top + the priority key underneath
+_LATE_BAR = "rgba(193,63,78,0.30)"
+_OK_BAR = "rgba(136,142,150,0.28)"
+
+#: Priority colours, one set per theme, both well clear of WCAG AA against
+#: their own background. Kept here rather than in grid_helpers so the Gantt can
+#: swap them when the Night/Day switch flips.
+_PRIORITY_DARK = {1: "#FF6B6B", 2: "#FFAE4D", 3: "#4DABF7"}
+_PRIORITY_LIGHT = {1: "#B3121F", 2: "#9A4E00", 3: "#0F4CA8"}
+_PRIORITY_NAME = {1: "Priority 1 (most important)", 2: "Priority 2", 3: "Priority 3"}
 
 
-def _body_color() -> str:
-    """Text colour for marks Plotly's Streamlit template does not reach."""
-    try:
-        return "#E6EDF3" if st.context.theme.type == "dark" else "#1F2328"
-    except Exception:  # pragma: no cover - older hosts without st.context.theme
-        return "#6B7280"
+def _priority_color(priority: int) -> str:
+    table = _PRIORITY_DARK if is_dark() else _PRIORITY_LIGHT
+    return table.get(priority, "#8A9099")
 
 
 def _emit(key: str, activity_id: str | None) -> str | None:
@@ -93,6 +105,10 @@ def render_gantt(
     )
     open_contracts = set(numbers) if show_all else set(picked)
 
+    st.markdown(
+        "**Each square is one night of work. Click a square to see why.**"
+    )
+
     # ---------------------------------------------------------- build rows
     # Rows are collected top-down, then handed to Plotly bottom-up.
     labels: list[str] = []
@@ -104,7 +120,9 @@ def render_gantt(
         priority = num(contract.get("contract_priority"))
         jobs = idx.activities_by_contract.get(number, [])
         late_days, late_text = late_label(idx.result_by_contract.get(number))
-        labels.append(f"P{priority or '?'}  {number}  ({len(jobs)})")
+        labels.append(
+            f"P{priority or '?'} · {number} · {len(jobs)} jobs · {late_text}"
+        )
         kinds.append("contract")
         payload.append(
             {
@@ -122,7 +140,10 @@ def render_gantt(
             for job in jobs:
                 activity_id = text(job.get("activity_id"))
                 nights = num(job.get("total_accesses"))
-                labels.append(f"    {activity_id}  ({nights}n)")
+                labels.append(
+                    f"     {activity_id} · {nights}"
+                    f" {'night' if nights == 1 else 'nights'}"
+                )
                 kinds.append("job")
                 payload.append(
                     {
@@ -172,7 +193,7 @@ def render_gantt(
                 text=bar_text,
                 textposition="auto",
                 insidetextanchor="start",
-                textfont=dict(size=11, color=_body_color()),
+                textfont=dict(size=CHART_FONT_PX - 2, color=body_color()),
                 cliponaxis=False,
                 hovertext=bar_hover,
                 hovertemplate="%{hovertext}<extra></extra>",
@@ -204,13 +225,15 @@ def render_gantt(
                 mode="markers",
                 marker=dict(
                     symbol="diamond-tall",
-                    size=15,
+                    size=24,
                     color=DEADLINE_COLOR,
-                    line=dict(width=1, color="rgba(255,255,255,0.65)"),
+                    line=dict(width=1.4, color="rgba(255,255,255,0.75)"),
                 ),
+                name="Deadline week",
                 hovertext=dl_hover,
+                hoverlabel=dict(font=dict(size=CHART_FONT_PX)),
                 hovertemplate="%{hovertext}<extra></extra>",
-                showlegend=False,
+                showlegend=True,
             )
         )
 
@@ -260,13 +283,15 @@ def render_gantt(
                 mode="markers",
                 marker=dict(
                     symbol="circle",
-                    size=9,
+                    size=MARKER_PX - 2,
                     color="rgba(0,0,0,0)",
-                    line=dict(width=1.4, color=WAITING_COLOR),
+                    line=dict(width=1.8, color=WAITING_COLOR),
                 ),
+                name="Waiting that week",
                 hovertext=wait_hover,
+                hoverlabel=dict(font=dict(size=CHART_FONT_PX)),
                 hovertemplate="%{hovertext}<extra></extra>",
-                showlegend=False,
+                showlegend=True,
             )
         )
 
@@ -279,19 +304,21 @@ def render_gantt(
                 mode="markers+text",
                 marker=dict(
                     symbol="square",
-                    size=15,
-                    color=priority_color(priority),
-                    line=dict(width=0.8, color="rgba(255,255,255,0.55)"),
+                    size=MARKER_PX + 4,
+                    color=_priority_color(priority),
+                    line=dict(width=1.0, color="rgba(255,255,255,0.65)"),
                 ),
                 # Picking one night must not grey out the rest of the programme.
                 unselected=dict(marker=dict(opacity=1)),
                 text=bucket["t"],
                 textposition="middle center",
-                textfont=dict(size=9, color="#FFFFFF"),
+                textfont=dict(size=CHART_FONT_PX - 3, color="#FFFFFF"),
                 customdata=bucket["cd"],
+                name=_PRIORITY_NAME.get(priority, f"Priority {priority}"),
                 hovertext=bucket["h"],
+                hoverlabel=dict(font=dict(size=CHART_FONT_PX)),
                 hovertemplate="%{hovertext}<extra></extra>",
-                showlegend=False,
+                showlegend=True,
             )
         )
 
@@ -318,7 +345,7 @@ def render_gantt(
                     mode="markers",
                     marker=dict(
                         symbol="square-open",
-                        size=24,
+                        size=MARKER_PX + 14,
                         color=DEADLINE_COLOR,
                         line=dict(width=2.2, color=DEADLINE_COLOR),
                     ),
@@ -327,25 +354,58 @@ def render_gantt(
                 )
             )
 
+    # Row height: a contract row carries a bar and its lateness, a job row a
+    # line of squares. Both are sized to stay legible at arm's length.
+    body_px = sum(CONTRACT_ROW_PX if k == "contract" else JOB_ROW_PX for k in kinds)
+
     fig.update_layout(
         barmode="overlay",
-        bargap=0.45,
-        margin=dict(l=8, r=16, t=8, b=8),
-        height=max(260, _CHROME_PX + _ROW_PX * len(labels)),
+        bargap=0.40,
+        margin=dict(l=12, r=20, t=12, b=12),
+        height=max(320, _CHROME_PX + body_px),
+        font=dict(size=CHART_FONT_PX, color=body_color()),
         hovermode="closest",
+        hoverlabel=dict(font=dict(size=CHART_FONT_PX)),
         dragmode=False,
-        showlegend=False,
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.02,
+            x=0,
+            font=dict(size=LEGEND_FONT_PX),
+            itemsizing="constant",
+            bgcolor="rgba(0,0,0,0)",
+        ),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
     )
+    # Week headers read "W5 · 1 Feb", upright. When the range is crowded the
+    # date drops off every second week so the labels never collide.
+    # How many weeks can carry a written header before they run into each
+    # other. Every week still gets its own gridline and its own hover text;
+    # this only thins out the WRITING, which is what makes a 30-week range
+    # readable on a 1024 px laptop.
+    step = 1 if len(weeks) <= 10 else 2 if len(weeks) <= 20 else 3
     fig.update_xaxes(
         range=[lo - 0.6, hi + 0.6],
         tickmode="array",
         tickvals=weeks,
-        ticktext=[f"{w}<br>{fmt_day_month(week_start(horizon, w))}" for w in weeks],
+        ticktext=[
+            # Two upright lines: the Monday's date, then the week number under
+            # it — "18 Jan / W3". Plotly bottom-aligns tick text, so keeping
+            # the week number on the last line puts every "W" on one row.
+            f"{fmt_day_month(week_start(horizon, w))}<br>W{w}"
+            if index % step == 0
+            else ""
+            for index, w in enumerate(weeks)
+        ],
+        tickangle=0,
+        tickfont=dict(size=AXIS_FONT_PX),
+        ticklabelstandoff=8,
         side="top",
         showgrid=True,
-        gridcolor="rgba(136,142,150,0.18)",
+        gridcolor="rgba(136,142,150,0.22)",
         zeroline=False,
         fixedrange=True,
         title=None,
@@ -354,11 +414,12 @@ def render_gantt(
         type="category",
         categoryorder="array",
         categoryarray=y_order,
+        tickfont=dict(size=AXIS_FONT_PX),
         showgrid=False,
         zeroline=False,
         fixedrange=True,
         title=None,
-        automargin=True,
+        automargin=True,  # widens the left margin to fit the whole row name
     )
 
     event = st.plotly_chart(
@@ -367,7 +428,8 @@ def render_gantt(
         on_select="rerun",
         selection_mode="points",
         key=key,
-        config={"displayModeBar": False, "scrollZoom": False},
+        width="stretch",
+        config={"displayModeBar": False, "scrollZoom": False, "responsive": True},
     )
 
     st.caption(
