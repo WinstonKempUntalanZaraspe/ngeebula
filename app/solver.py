@@ -26,7 +26,7 @@ REQUIRED_TABLES = ("sectors", "location_supply", "buffer_location", "parameters"
 PRIORITY_BASE_WEIGHT = {1: 100, 2: 10, 3: 1}
 ACTIVITY_PRIORITY_TENTHS = {1: 3, 2: 2, 3: 0}
 PHYSICAL_NIGHTS_PER_WEEK = 7
-SOLVER_VERSION = "hard-rules-v8"
+SOLVER_VERSION = "hard-rules-v9"
 
 def _clean(value: Any) -> str:
     return "" if value is None else str(value).strip()
@@ -627,6 +627,18 @@ def solve_schedule(
                 "access_night": access_night,
             })
 
+    location_week_nights: Dict[Tuple[str, int], Set[int]] = defaultdict(set)
+    for access in schedule_access:
+        activity_id, week = str(access["activity_id"]), int(access["week"])
+        night = chosen_physical_night[activity_id, week]
+        for location_id in route[activity_id]:
+            location_week_nights[location_id, week].add(night)
+
+    local_group: Dict[Tuple[str, int, int], str] = {}
+    for (location_id, week), nights in location_week_nights.items():
+        for index, night in enumerate(sorted(nights), start=1):
+            local_group[location_id, week, night] = f"b{index}"
+
     schedule_occupancy: List[Dict[str, Any]] = []
     for access in schedule_access:
         activity_id, week = str(access["activity_id"]), int(access["week"])
@@ -636,8 +648,101 @@ def solve_schedule(
                 "activity_id": activity_id,
                 "week": week,
                 "location_id": location_id,
-                "co_share_group": f"b{night}",
+                "co_share_group": local_group[location_id, week, night],
             })
+
+    internal_hard_rule_errors: List[str] = []
+
+    for i, a in enumerate(activity_ids):
+        for b in activity_ids[i + 1:]:
+            if not (closure[a] & closure[b]):
+                continue
+            if _co_share_pair_allowed(activity_access_type[a], activity_access_type[b], route[a], route[b]):
+                continue
+            for week in weeks:
+                if solver.Value(scheduled[a, week]) != 1 or solver.Value(scheduled[b, week]) != 1:
+                    continue
+                if chosen_physical_night[a, week] == chosen_physical_night[b, week]:
+                    internal_hard_rule_errors.append(f"closure:{week}:{a}:{b}")
+
+    for location_id, nominal_supply in supply.items():
+        ids = activities_at_location.get(location_id, [])
+        if not ids:
+            continue
+        for week in weeks:
+            by_night: Dict[int, List[str]] = defaultdict(list)
+            for a in ids:
+                if solver.Value(scheduled[a, week]) == 1:
+                    by_night[chosen_physical_night[a, week]].append(a)
+            used = len(by_night)
+            if scenario == "A" and used > nominal_supply:
+                internal_hard_rule_errors.append(f"capacity:{location_id}:{week}:{used}>{nominal_supply}")
+            if scenario == "C" and used > nominal_supply + 1:
+                internal_hard_rule_errors.append(f"capacity:{location_id}:{week}:{used}>{nominal_supply + 1}")
+            for night, members in by_night.items():
+                pm = sum(activity_access_type[a] == "PM" for a in members)
+                pc = sum(activity_access_type[a] == "PC" for a in members)
+                c = sum(activity_access_type[a] == "C" for a in members)
+                if pm > 1 or pc > 1 or pm + pc > 1 or c + pc + 4 * pm > 4:
+                    internal_hard_rule_errors.append(f"mix:{location_id}:{week}:d{night}")
+
+    for activity_id, activity in activities.items():
+        active_weeks = [week for week in weeks if solver.Value(scheduled[activity_id, week]) == 1]
+        if not active_weeks:
+            internal_hard_rule_errors.append(f"workload:{activity_id}:missing")
+            continue
+        if min(active_weeks) < earliest_week[activity_id]:
+            internal_hard_rule_errors.append(f"planned_start:{activity_id}")
+        required = 2 * _as_int(activity.get("total_accesses"), f"{activity_id}.total_accesses")
+        delivered = sum(
+            2 * int(solver.Value(normal[activity_id, week])) + 3 * int(solver.Value(eclo[activity_id, week]))
+            for week in weeks
+        )
+        if delivered < required:
+            internal_hard_rule_errors.append(f"workload:{activity_id}:{delivered}<{required}")
+
+    for successor_id, activity in activities.items():
+        predecessor_id = _clean(activity.get("predecessor_activity_id"))
+        if predecessor_id and solver.Value(start_week[successor_id]) <= solver.Value(end_week[predecessor_id]):
+            internal_hard_rule_errors.append(f"predecessor:{predecessor_id}:{successor_id}")
+
+    for (contract, activity_type), ids in activities_by_contract_type.items():
+        cap = _as_int(projects[contract].get("number_of_maximum_access_per_week"), f"{contract}.number_of_maximum_access_per_week")
+        workfronts = _as_int(projects[contract].get("number_of_workfronts"), f"{contract}.number_of_workfronts")
+        for week in weeks:
+            used_access_nights = set()
+            counts: Dict[int, int] = defaultdict(int)
+            for a in ids:
+                if solver.Value(scheduled[a, week]) != 1:
+                    continue
+                n = next(
+                    x for x in range(1, cap + 1)
+                    if solver.Value(local_access[a, week, x]) == 1
+                )
+                used_access_nights.add(n)
+                counts[n] += 1
+            if len(used_access_nights) > cap:
+                internal_hard_rule_errors.append(f"allocation:{contract}:{activity_type}:{week}")
+            for n, count in counts.items():
+                if count > workfronts:
+                    internal_hard_rule_errors.append(f"workfront:{contract}:{activity_type}:{week}:{n}")
+
+    if scenario == "A":
+        for a in activity_ids:
+            for week in weeks:
+                if solver.Value(eclo[a, week]) == 1:
+                    internal_hard_rule_errors.append(f"eclo:A:{a}:{week}")
+
+    if scenario == "C":
+        eclo_weeks_by_line: Dict[str, Set[int]] = defaultdict(set)
+        for a in activity_ids:
+            for week in weeks:
+                if solver.Value(eclo[a, week]) == 1:
+                    for line in affected_lines[a]:
+                        eclo_weeks_by_line[line].add(week)
+        for line, eweeks in eclo_weeks_by_line.items():
+            if eweeks and max(eweeks) - min(eweeks) > 1:
+                internal_hard_rule_errors.append(f"eclo_window:{line}:{sorted(eweeks)}")
 
     results_rows: List[Dict[str, Any]] = []
     for contract in sorted(projects):
@@ -680,9 +785,11 @@ def solve_schedule(
             "excess_access_nights_total": sum(int(solver.Value(var)) for var in excess_by_location_week.values()),
             "pair_conflicts": pair_conflicts,
             "pair_coshare_exemptions": pair_coshare_exemptions,
+            "internal_hard_rule_error_count": len(internal_hard_rule_errors),
             "wall_time_seconds": float(solver.WallTime()),
         },
         "predecessor_checks": predecessor_checks,
+        "internal_hard_rule_errors": internal_hard_rule_errors,
         "debug": {
             "solver_version": SOLVER_VERSION,
             "horizon_start": horizon_start.isoformat(),
