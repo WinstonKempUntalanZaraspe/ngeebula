@@ -4,6 +4,7 @@ import argparse
 import csv
 import datetime as dt
 from collections import defaultdict
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
@@ -23,13 +24,14 @@ TABLE_ALIASES: Dict[str, Tuple[str, ...]] = {
     "activity_details": ("activity_details", "08_ACTIVITY_DETAILS.csv", "08_ACTIVITY_DETAILS", "ACTIVITY_DETAILS"),
 }
 REQUIRED_TABLES = ("sectors", "location_supply", "buffer_location", "parameters", "project_details", "activity_details")
-PRIORITY_BASE_WEIGHT = {1: 100, 2: 10, 3: 1}
-ACTIVITY_PRIORITY_TENTHS = {1: 3, 2: 2, 3: 0}
-PHYSICAL_NIGHTS_PER_WEEK = 7
-SOLVER_VERSION = "hard-rules-v11"
+CONTRACT_WEIGHT10 = {1: 1000, 2: 100, 3: 10}
+ACTIVITY_MULT10 = {1: 13, 2: 12, 3: 10}
+SOLVER_VERSION = "hard-rules-v12"
+
 
 def _clean(value: Any) -> str:
     return "" if value is None else str(value).strip()
+
 
 def _as_int(value: Any, field: str) -> int:
     text = _clean(value)
@@ -40,6 +42,7 @@ def _as_int(value: Any, field: str) -> int:
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Invalid integer for {field}: {value!r}") from exc
 
+
 def _parse_date(value: Any, field: str) -> dt.date:
     text = _clean(value)
     if not text:
@@ -48,6 +51,7 @@ def _parse_date(value: Any, field: str) -> dt.date:
         return dt.date.fromisoformat(text[:10])
     except ValueError as exc:
         raise ValueError(f"Invalid ISO date for {field}: {value!r}") from exc
+
 
 def _records(value: Any) -> List[Dict[str, Any]]:
     if value is None:
@@ -63,6 +67,7 @@ def _records(value: Any) -> List[Dict[str, Any]]:
         return [dict(value)]
     raise TypeError(f"Unsupported table type: {type(value).__name__}")
 
+
 def _find_table(data: Mapping[str, Any], canonical: str) -> List[Dict[str, Any]]:
     for alias in TABLE_ALIASES[canonical]:
         if alias in data:
@@ -74,12 +79,14 @@ def _find_table(data: Mapping[str, Any], canonical: str) -> List[Dict[str, Any]]
             return _records(data[key])
     return []
 
+
 def _normalise_instance(data: Mapping[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
     tables = {name: _find_table(data, name) for name in TABLE_ALIASES}
     missing = [name for name in REQUIRED_TABLES if not tables[name]]
     if missing:
         raise ValueError("Missing required PS1 tables: " + ", ".join(missing))
     return tables
+
 
 def _parameters_dict(rows: Sequence[Mapping[str, Any]]) -> Dict[str, str]:
     out: Dict[str, str] = {}
@@ -89,18 +96,23 @@ def _parameters_dict(rows: Sequence[Mapping[str, Any]]) -> Dict[str, str]:
             out[key] = _clean(row.get("value"))
     return out
 
+
 def _week_of(date_value: dt.date, horizon_start: dt.date) -> int:
     return ((date_value - horizon_start).days // 7) + 1
+
 
 def _week_end_date(week: int, horizon_start: dt.date) -> dt.date:
     return horizon_start + dt.timedelta(days=week * 7 - 1)
 
+
 def _date_day_index(date_value: dt.date, horizon_start: dt.date) -> int:
     return (date_value - horizon_start).days
+
 
 def _read_csv(path: Path) -> List[Dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
+
 
 def load_instance(folder: str | Path) -> Dict[str, List[Dict[str, str]]]:
     folder = Path(folder)
@@ -116,6 +128,7 @@ def load_instance(folder: str | Path) -> Dict[str, List[Dict[str, str]]]:
         raise ValueError(f"{folder} is missing required files for: {', '.join(missing)}")
     return result
 
+
 def _write_csv(path: Path, fieldnames: Sequence[str], rows: Iterable[Mapping[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -123,6 +136,7 @@ def _write_csv(path: Path, fieldnames: Sequence[str], rows: Iterable[Mapping[str
         writer.writeheader()
         for row in rows:
             writer.writerow({field: row.get(field, "") for field in fieldnames})
+
 
 def write_submission(result: Mapping[str, Any], output_dir: str | Path) -> Dict[str, str]:
     if result.get("status") != "success":
@@ -137,6 +151,7 @@ def write_submission(result: Mapping[str, Any], output_dir: str | Path) -> Dict[
     _write_csv(results, ["scenario", "contract_number", "simulated_completion_date", "overrun_days"], result["results"])
     return {"SCHEDULE_ACCESS.csv": str(access), "SCHEDULE_OCCUPANCY.csv": str(occupancy), "RESULTS.csv": str(results)}
 
+
 def _parse_track_location(location_id: str) -> Tuple[str, str, str, str]:
     parts = _clean(location_id).split(":")
     if len(parts) != 4:
@@ -146,25 +161,26 @@ def _parse_track_location(location_id: str) -> Tuple[str, str, str, str]:
         raise ValueError(f"Invalid location_id: {location_id!r}")
     return kind, line, middle, bound
 
+
 def _sector_base_id(location_id: str) -> str:
     kind, line, middle, _ = _parse_track_location(location_id)
     if kind != "SEC":
         raise ValueError(f"Activity start/end must be sector locations: {location_id}")
     return f"SEC:{line}:{middle}"
 
+
 def _swap_bound(location_id: str) -> str:
     kind, line, middle, bound = _parse_track_location(location_id)
     return f"{kind}:{line}:{middle}:{'WB' if bound == 'EB' else 'EB'}"
 
-def _line_of_location(location_id: str) -> str:
-    return _parse_track_location(location_id)[1]
 
 def _build_sector_index(sectors: Sequence[Mapping[str, Any]]) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
     by_id: Dict[str, Dict[str, Any]] = {}
     by_line: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for raw in sectors:
         row = dict(raw)
-        sector_id, line = _clean(row.get("sector_id")), _clean(row.get("line_code"))
+        sector_id = _clean(row.get("sector_id"))
+        line = _clean(row.get("line_code"))
         if not sector_id or not line:
             raise ValueError("SECTORS row missing sector_id or line_code")
         row["seq"] = _as_int(row.get("seq"), "SECTORS.seq")
@@ -174,18 +190,23 @@ def _build_sector_index(sectors: Sequence[Mapping[str, Any]]) -> Tuple[Dict[str,
         by_line[line].sort(key=lambda r: int(r["seq"]))
     return by_id, dict(by_line)
 
+
 def _locations_for_sector_rows(sector_rows: Sequence[Mapping[str, Any]], line: str, bound: str) -> Set[str]:
-    locations, stations = set(), set()
+    locations: Set[str] = set()
+    stations: Set[str] = set()
     for row in sector_rows:
         locations.add(f"{_clean(row['sector_id'])}:{bound}")
-        stations.add(_clean(row["from_station_id"]))
-        stations.add(_clean(row["to_station_id"]))
+        stations.add(_clean(row.get("from_station_id")))
+        stations.add(_clean(row.get("to_station_id")))
     for station in stations:
-        locations.add(f"PLAT:{line}:{station}:{bound}")
+        if station:
+            locations.add(f"PLAT:{line}:{station}:{bound}")
     return locations
+
 
 def _normalise_nature_label(value: Any) -> str:
     return " ".join(_clean(value).lower().split()).replace("–", "-").replace("—", "-")
+
 
 def _resolve_nature_buffer(raw_nature: Any, buffer_by_nature: Mapping[str, int]) -> Tuple[str, int]:
     nature = _normalise_nature_label(raw_nature)
@@ -201,24 +222,24 @@ def _resolve_nature_buffer(raw_nature: Any, buffer_by_nature: Mapping[str, int])
             return norm, int(buffer_by_nature[key])
     raise ValueError(f"Unrecognised nature_of_activity {raw_nature!r}; known buffer types are {sorted(buffer_by_nature)}")
 
-def _get_interchange_hubs(stations: Sequence[Mapping[str, Any]], sectors: Sequence[Mapping[str, Any]]) -> Set[str]:
-    hubs, interchange = set(), set()
-    truthy = {"1", "true", "yes", "y"}
-    for station in stations:
-        if _clean(station.get("is_interchange")).lower() in truthy:
-            station_id = _clean(station.get("station_id"))
-            if station_id:
-                interchange.add(station_id)
-                hubs.add(station_id)
-    for sector in sectors:
-        shared = _clean(sector.get("is_shared")).lower() in truthy
-        start, end = _clean(sector.get("from_station_id")), _clean(sector.get("to_station_id"))
-        if not (shared or (start in interchange and end in interchange)):
-            continue
-        parts = _clean(sector.get("sector_id")).split(":")
-        if len(parts) >= 3 and parts[0] == "SEC" and parts[2]:
-            hubs.add(parts[2])
-    return hubs or {"H01", "H02", "H01_H02"}
+
+def _get_interchange_stations(stations: Sequence[Mapping[str, Any]]) -> Set[str]:
+    truthy = {"1", "true", "yes", "y", "t"}
+    flagged = {
+        _clean(row.get("station_id"))
+        for row in stations
+        if _clean(row.get("is_interchange")).lower() in truthy and _clean(row.get("station_id"))
+    }
+    if flagged:
+        return flagged
+    lines_by_station: Dict[str, Set[str]] = defaultdict(set)
+    for row in stations:
+        sid = _clean(row.get("station_id"))
+        line = _clean(row.get("line_code"))
+        if sid and line:
+            lines_by_station[sid].add(line)
+    return {sid for sid, lines in lines_by_station.items() if len(lines) > 1}
+
 
 def _activity_route_and_closure(
     activity: Mapping[str, Any],
@@ -227,75 +248,73 @@ def _activity_route_and_closure(
     sectors_by_line: Mapping[str, Sequence[Mapping[str, Any]]],
     buffer_by_nature: Mapping[str, int],
     all_location_ids: Set[str],
-    interchange_hubs: Set[str],
+    interchange_stations: Set[str],
 ) -> Tuple[Set[str], Set[str], Set[str]]:
-    start_location, end_location = _clean(activity.get("start_location_id")), _clean(activity.get("end_location_id"))
+    start_location = _clean(activity.get("start_location_id"))
+    end_location = _clean(activity.get("end_location_id"))
     _, start_line, _, start_bound = _parse_track_location(start_location)
     _, end_line, _, end_bound = _parse_track_location(end_location)
     if start_line != end_line or start_bound != end_bound:
         raise ValueError(f"Activity {activity.get('activity_id')} crosses line/bound in start/end")
-    start_base, end_base = _sector_base_id(start_location), _sector_base_id(end_location)
+    start_base = _sector_base_id(start_location)
+    end_base = _sector_base_id(end_location)
     if start_base not in sector_by_id or end_base not in sector_by_id:
         raise ValueError(f"Activity {activity.get('activity_id')} references a sector missing from SECTORS")
-    low, high = sorted((int(sector_by_id[start_base]["seq"]), int(sector_by_id[end_base]["seq"])))
+
     line_rows = list(sectors_by_line[start_line])
-    route_rows = [r for r in line_rows if low <= int(r["seq"]) <= high]
+    ids = [_clean(row.get("sector_id")) for row in line_rows]
+    try:
+        i, j = sorted((ids.index(start_base), ids.index(end_base)))
+    except ValueError as exc:
+        raise ValueError(f"Activity {activity.get('activity_id')} route endpoints are not on line {start_line}") from exc
+
+    route_rows = line_rows[i:j + 1]
     route = _locations_for_sector_rows(route_rows, start_line, start_bound)
-    nature, buffer_size = _resolve_nature_buffer(project.get("nature_of_activity"), buffer_by_nature)
-    closure = set(route)
-    if buffer_size > 0:
-        buffer_rows = [
-            r for r in line_rows
-            if low - buffer_size <= int(r["seq"]) <= high + buffer_size
-            and not (low <= int(r["seq"]) <= high)
-        ]
-        closure |= _locations_for_sector_rows(buffer_rows, start_line, start_bound)
+    nature, radius = _resolve_nature_buffer(project.get("nature_of_activity"), buffer_by_nature)
+    lo = max(0, i - radius)
+    hi = min(len(line_rows) - 1, j + radius)
+    protected_rows = line_rows[lo:hi + 1]
+    full_span = _locations_for_sector_rows(protected_rows, start_line, start_bound)
+
+    if nature == "live":
+        closure = set(full_span)
+    else:
+        closure = set(route)
+        closure |= {loc for loc in full_span if loc.startswith("SEC:")}
+
     if nature == "live":
         closure |= {_swap_bound(loc) for loc in list(closure)}
-
-        touches_interchange = False
-        for loc in closure:
-            kind, _, middle, _ = _parse_track_location(loc)
-            if middle in interchange_hubs:
-                touches_interchange = True
-                break
-            if kind == "SEC":
-                parts = middle.split("_")
-                if any(part in interchange_hubs for part in parts):
-                    touches_interchange = True
-                    break
-
-        if touches_interchange:
-            for other_line, other_rows_raw in sectors_by_line.items():
+        touched_hubs = {
+            _parse_track_location(loc)[2]
+            for loc in closure
+            if loc.startswith("PLAT:") and _parse_track_location(loc)[2] in interchange_stations
+        }
+        if touched_hubs:
+            for other_line, rows_raw in sectors_by_line.items():
                 if other_line == start_line:
                     continue
-                other_rows = list(other_rows_raw)
-                corridor_indexes = []
-                for idx, row in enumerate(other_rows):
-                    from_station = _clean(row.get("from_station_id"))
-                    to_station = _clean(row.get("to_station_id"))
-                    if from_station in interchange_hubs and to_station in interchange_hubs:
-                        corridor_indexes.append(idx)
-                for idx in corridor_indexes:
-                    lo = max(0, idx - buffer_size)
-                    hi = min(len(other_rows) - 1, idx + buffer_size)
-                    expanded_rows = other_rows[lo:hi + 1]
-                    closure |= _locations_for_sector_rows(expanded_rows, other_line, start_bound)
-                    closure |= _locations_for_sector_rows(expanded_rows, other_line, "WB" if start_bound == "EB" else "EB")
-    closure &= all_location_ids
+                rows = list(rows_raw)
+                for idx, row in enumerate(rows):
+                    ends = {_clean(row.get("from_station_id")), _clean(row.get("to_station_id"))}
+                    if not (ends <= interchange_stations and ends & touched_hubs):
+                        continue
+                    cross_lo = max(0, idx - radius)
+                    cross_hi = min(len(rows) - 1, idx + radius)
+                    buffered = rows[cross_lo:cross_hi + 1]
+                    closure |= _locations_for_sector_rows(buffered, other_line, "EB")
+                    closure |= _locations_for_sector_rows(buffered, other_line, "WB")
+
     route &= all_location_ids
+    closure &= all_location_ids
     if not route:
         raise ValueError(f"Activity {activity.get('activity_id')} expands to no valid occupancy locations")
-    return route, closure, {_line_of_location(loc) for loc in closure}
+    affected_lines = {_parse_track_location(loc)[1] for loc in closure}
+    return route, closure, affected_lines
 
-def _co_share_pair_allowed(
-    access_type_a: str,
-    access_type_b: str,
-    route_a: Set[str],
-    route_b: Set[str],
-) -> bool:
-    pair = {access_type_a, access_type_b}
-    return ((access_type_a == "C" and access_type_b == "C") or pair == {"PC", "C"}) and bool(route_a & route_b)
+
+def _co_share_pair_allowed(access_type_a: str, access_type_b: str, route_a: Set[str], route_b: Set[str]) -> bool:
+    return bool(route_a & route_b) and "PM" not in {access_type_a, access_type_b} and not (access_type_a == "PC" and access_type_b == "PC")
+
 
 def _validate_predecessors(activities: Mapping[str, Mapping[str, Any]]) -> None:
     graph: Dict[str, Optional[str]] = {}
@@ -307,6 +326,7 @@ def _validate_predecessors(activities: Mapping[str, Mapping[str, Any]]) -> None:
             raise ValueError(f"Activity {activity_id} cannot depend on itself")
         graph[activity_id] = predecessor
     state = {activity_id: 0 for activity_id in activities}
+
     def visit(node: str, stack: List[str]) -> None:
         if state[node] == 2:
             return
@@ -319,15 +339,43 @@ def _validate_predecessors(activities: Mapping[str, Mapping[str, Any]]) -> None:
             visit(graph[node], stack)
         stack.pop()
         state[node] = 2
+
     for activity_id in activities:
         if state[activity_id] == 0:
             visit(activity_id, [])
+
+
+def _possession_components(
+    groups: Mapping[Tuple[str, int, str], Set[str]],
+    by_week: Mapping[int, Set[str]],
+) -> Dict[Tuple[int, str], Set[str]]:
+    parent: Dict[Tuple[int, str], str] = {(week, aid): aid for week, aids in by_week.items() for aid in aids}
+
+    def root(week: int, aid: str) -> str:
+        while parent[week, aid] != aid:
+            parent[week, aid] = parent[week, parent[week, aid]]
+            aid = parent[week, aid]
+        return aid
+
+    for (_, week, _), aids in groups.items():
+        present = sorted(a for a in aids if (week, a) in parent)
+        if not present:
+            continue
+        first = root(week, present[0])
+        for aid in present[1:]:
+            parent[week, root(week, aid)] = first
+
+    components: Dict[Tuple[int, str], Set[str]] = defaultdict(set)
+    for week, aid in parent:
+        components[week, root(week, aid)].add(aid)
+    return dict(components)
+
 
 def solve_schedule(
     data: Mapping[str, Any],
     scenario: str = "A",
     *,
-    time_limit_seconds: float = 30.0,
+    time_limit_seconds: float = 60.0,
     num_workers: Optional[int] = 1,
     random_seed: int = 42,
 ) -> Dict[str, Any]:
@@ -340,7 +388,6 @@ def solve_schedule(
     horizon_start = _parse_date(params.get("horizon_start"), "horizon_start")
     horizon_weeks = _as_int(params.get("horizon_weeks"), "horizon_weeks")
     weeks = list(range(1, horizon_weeks + 1))
-    physical_nights = list(range(1, PHYSICAL_NIGHTS_PER_WEEK + 1))
 
     projects: Dict[str, Dict[str, Any]] = {}
     for row in tables["project_details"]:
@@ -364,167 +411,123 @@ def solve_schedule(
 
     supply: Dict[str, int] = {}
     for row in tables["location_supply"]:
-        supply[_clean(row.get("location_id"))] = _as_int(row.get("supply_capacity"), "supply_capacity")
+        loc = _clean(row.get("location_id"))
+        if loc:
+            supply[loc] = _as_int(row.get("supply_capacity"), "supply_capacity")
     all_location_ids = set(supply)
 
     buffer_by_nature: Dict[str, int] = {}
     for row in tables["buffer_location"]:
         nature = _normalise_nature_label(row.get("nature_of_works"))
-        if not nature:
-            raise ValueError("BUFFER_LOCATION row missing nature_of_works")
-        buffer_by_nature[nature] = _as_int(row.get("up_to_buffer_sectors"), "up_to_buffer_sectors")
+        if nature:
+            buffer_by_nature[nature] = _as_int(row.get("up_to_buffer_sectors"), "up_to_buffer_sectors")
 
-    interchange_hubs = _get_interchange_hubs(tables.get("stations", []), tables["sectors"])
-    activity_ids = list(activities)
+    interchange_stations = _get_interchange_stations(tables.get("stations", []))
+    activity_ids = sorted(activities)
     route: Dict[str, Set[str]] = {}
     closure: Dict[str, Set[str]] = {}
     affected_lines: Dict[str, Set[str]] = {}
     earliest_week: Dict[str, int] = {}
     activity_contract: Dict[str, str] = {}
     activity_access_type: Dict[str, str] = {}
+    activity_type: Dict[str, str] = {}
 
-    for activity_id, activity in activities.items():
+    for aid in activity_ids:
+        activity = activities[aid]
         contract = _clean(activity.get("contract_number"))
         project = projects[contract]
-        activity_contract[activity_id] = contract
-        activity_access_type[activity_id] = _clean(project.get("access_type"))
-        earliest_week[activity_id] = max(1, _week_of(_parse_date(activity.get("planned_start_date"), f"{activity_id}.planned_start_date"), horizon_start))
-        route[activity_id], closure[activity_id], affected_lines[activity_id] = _activity_route_and_closure(
-            activity, project, sector_by_id, sectors_by_line, buffer_by_nature, all_location_ids, interchange_hubs
+        activity_contract[aid] = contract
+        activity_access_type[aid] = _clean(project.get("access_type"))
+        activity_type[aid] = _clean(activity.get("activity_type"))
+        earliest_week[aid] = max(1, _week_of(_parse_date(activity.get("planned_start_date"), f"{aid}.planned_start_date"), horizon_start))
+        route[aid], closure[aid], affected_lines[aid] = _activity_route_and_closure(
+            activity,
+            project,
+            sector_by_id,
+            sectors_by_line,
+            buffer_by_nature,
+            all_location_ids,
+            interchange_stations,
         )
 
-    activities_at_location: Dict[str, List[str]] = defaultdict(list)
-    for activity_id in activity_ids:
-        for location_id in route[activity_id]:
-            activities_at_location[location_id].append(activity_id)
+    max_supply = max(supply.values()) if supply else 1
+    slot_count = max(7, max_supply)
+    slots = list(range(slot_count))
 
     model = cp_model.CpModel()
     scheduled: Dict[Tuple[str, int], cp_model.IntVar] = {}
-    normal: Dict[Tuple[str, int], cp_model.IntVar] = {}
     eclo: Dict[Tuple[str, int], cp_model.IntVar] = {}
     physical: Dict[Tuple[str, int, int], cp_model.IntVar] = {}
-    local_access: Dict[Tuple[str, int, int], cp_model.IntVar] = {}
+    finish: Dict[str, cp_model.IntVar] = {}
 
-    for activity_id in activity_ids:
-        contract = activity_contract[activity_id]
-        cap = _as_int(projects[contract].get("number_of_maximum_access_per_week"), f"{contract}.number_of_maximum_access_per_week")
+    for aid in activity_ids:
+        project = projects[activity_contract[aid]]
+        planned_completion = _parse_date(project.get("planned_completion_date"), f"{activity_contract[aid]}.planned_completion_date")
+        finish[aid] = model.NewIntVar(1, horizon_weeks, f"finish__{aid}")
+        end_candidates = []
         for week in weeks:
-            s = model.NewBoolVar(f"scheduled__{activity_id}__w{week}")
-            n = model.NewBoolVar(f"normal__{activity_id}__w{week}")
-            e = model.NewBoolVar(f"eclo__{activity_id}__w{week}")
-            scheduled[activity_id, week], normal[activity_id, week], eclo[activity_id, week] = s, n, e
-            model.Add(n + e == s)
-            if week < earliest_week[activity_id]:
+            s = model.NewBoolVar(f"scheduled__{aid}__w{week}")
+            e = model.NewBoolVar(f"eclo__{aid}__w{week}")
+            scheduled[aid, week] = s
+            eclo[aid, week] = e
+            model.Add(e <= s)
+            if week < earliest_week[aid]:
                 model.Add(s == 0)
             if scenario == "A":
                 model.Add(e == 0)
+            if scenario == "B" and _week_end_date(week, horizon_start) > planned_completion:
+                model.Add(s == 0)
             pvars = []
-            for night in physical_nights:
-                var = model.NewBoolVar(f"physical__{activity_id}__w{week}__d{night}")
-                physical[activity_id, week, night] = var
-                pvars.append(var)
+            for slot in slots:
+                z = model.NewBoolVar(f"slot__{aid}__w{week}__s{slot}")
+                physical[aid, week, slot] = z
+                pvars.append(z)
             model.Add(sum(pvars) == s)
-            avars = []
-            for access_night in range(1, cap + 1):
-                var = model.NewBoolVar(f"accessnight__{activity_id}__w{week}__n{access_night}")
-                local_access[activity_id, week, access_night] = var
-                avars.append(var)
-            model.Add(sum(avars) == s)
-
-    for activity_id, activity in activities.items():
-        required = 2 * _as_int(activity.get("total_accesses"), f"{activity_id}.total_accesses")
-        delivered = sum(2 * normal[activity_id, week] + 3 * eclo[activity_id, week] for week in weeks)
+            end_candidates.append(week * s)
+        model.AddMaxEquality(finish[aid], end_candidates)
+        required = 2 * _as_int(activities[aid].get("total_accesses"), f"{aid}.total_accesses")
+        delivered = sum(2 * scheduled[aid, week] + eclo[aid, week] for week in weeks)
         model.Add(delivered >= required)
         model.Add(delivered <= required + 1)
 
-    start_week: Dict[str, cp_model.IntVar] = {}
-    end_week: Dict[str, cp_model.IntVar] = {}
-    sentinel = horizon_weeks + 1
-    for activity_id in activity_ids:
-        start = model.NewIntVar(1, horizon_weeks, f"startweek__{activity_id}")
-        end = model.NewIntVar(1, horizon_weeks, f"endweek__{activity_id}")
-        start_week[activity_id], end_week[activity_id] = start, end
-        start_candidates, end_candidates = [], []
+    for successor in activity_ids:
+        pred = _clean(activities[successor].get("predecessor_activity_id"))
+        if not pred:
+            continue
         for week in weeks:
-            sc = model.NewIntVar(1, sentinel, f"startcand__{activity_id}__w{week}")
-            ec = model.NewIntVar(0, horizon_weeks, f"endcand__{activity_id}__w{week}")
-            model.Add(sc == week * scheduled[activity_id, week] + sentinel * (1 - scheduled[activity_id, week]))
-            model.Add(ec == week * scheduled[activity_id, week])
-            start_candidates.append(sc)
-            end_candidates.append(ec)
-        model.AddMinEquality(start, start_candidates)
-        model.AddMaxEquality(end, end_candidates)
+            model.Add(finish[pred] < week).OnlyEnforceIf(scheduled[successor, week])
 
-    for successor_id, activity in activities.items():
-        predecessor_id = _clean(activity.get("predecessor_activity_id"))
-        if predecessor_id:
-            model.Add(start_week[successor_id] >= end_week[predecessor_id] + 1)
+    activities_at_location: Dict[str, List[str]] = defaultdict(list)
+    for aid in activity_ids:
+        for loc in route[aid]:
+            activities_at_location[loc].append(aid)
 
-    activities_by_contract_type: Dict[Tuple[str, str], List[str]] = defaultdict(list)
-    for activity_id, activity in activities.items():
-        activities_by_contract_type[(activity_contract[activity_id], _clean(activity.get("activity_type")))].append(activity_id)
-
-    for (contract, _), ids in activities_by_contract_type.items():
-        project = projects[contract]
-        cap = _as_int(project.get("number_of_maximum_access_per_week"), f"{contract}.number_of_maximum_access_per_week")
-        workfronts = _as_int(project.get("number_of_workfronts"), f"{contract}.number_of_workfronts")
-        for week in weeks:
-            for access_night in range(1, cap + 1):
-                model.Add(sum(local_access[a, week, access_night] for a in ids) <= workfronts)
-
-    access_slot_to_physical: Dict[Tuple[str, str, int, int, int], cp_model.IntVar] = {}
-    for (contract, activity_type), ids in activities_by_contract_type.items():
-        cap = _as_int(projects[contract].get("number_of_maximum_access_per_week"), f"{contract}.number_of_maximum_access_per_week")
-        safe_type = activity_type or "UNKNOWN"
-        for week in weeks:
-            for access_night in range(1, cap + 1):
-                row = []
-                for night in physical_nights:
-                    link = model.NewBoolVar(f"slotmap__{contract}__{safe_type}__w{week}__n{access_night}__d{night}")
-                    access_slot_to_physical[contract, activity_type, week, access_night, night] = link
-                    row.append(link)
-                model.Add(sum(row) <= 1)
-            for night in physical_nights:
-                model.Add(sum(access_slot_to_physical[contract, activity_type, week, access_night, night] for access_night in range(1, cap + 1)) <= 1)
-            for activity_id in ids:
-                for access_night in range(1, cap + 1):
-                    for night in physical_nights:
-                        model.Add(
-                            local_access[activity_id, week, access_night] + physical[activity_id, week, night]
-                            <= 1 + access_slot_to_physical[contract, activity_type, week, access_night, night]
-                        )
-
-    location_night_used: Dict[Tuple[str, int, int], cp_model.IntVar] = {}
     excess_by_location_week: Dict[Tuple[str, int], cp_model.IntVar] = {}
-    for location_id, nominal_supply in supply.items():
-        ids = activities_at_location.get(location_id, [])
-        if not ids:
+    for loc, nominal_supply in supply.items():
+        occupants = activities_at_location.get(loc, [])
+        if not occupants:
             continue
         for week in weeks:
             used_vars = []
-            for night in physical_nights:
-                relevant = [physical[a, week, night] for a in ids]
-                used = model.NewBoolVar(f"used__{location_id}__w{week}__d{night}")
-                location_night_used[location_id, week, night] = used
-                used_vars.append(used)
-                for var in relevant:
-                    model.Add(var <= used)
-                model.Add(used <= sum(relevant))
-                pm = [physical[a, week, night] for a in ids if activity_access_type[a] == "PM"]
-                pc = [physical[a, week, night] for a in ids if activity_access_type[a] == "PC"]
-                c = [physical[a, week, night] for a in ids if activity_access_type[a] == "C"]
-                pm_sum, pc_sum, c_sum = (sum(pm) if pm else 0), (sum(pc) if pc else 0), (sum(c) if c else 0)
-                model.Add(pm_sum <= 1)
-                model.Add(pc_sum <= 1)
-                model.Add(pm_sum + pc_sum <= 1)
-                model.Add(c_sum + pc_sum + 4 * pm_sum <= 4)
+            for slot in slots:
+                terms = [physical[aid, week, slot] for aid in occupants]
+                busy = model.NewBoolVar(f"used__{loc}__w{week}__s{slot}")
+                model.AddMaxEquality(busy, terms)
+                used_vars.append(busy)
+                model.Add(sum(terms) <= 4)
+                pc_terms = [physical[aid, week, slot] for aid in occupants if activity_access_type[aid] == "PC"]
+                if pc_terms:
+                    model.Add(sum(pc_terms) <= 1)
+                for aid in occupants:
+                    if activity_access_type[aid] == "PM":
+                        model.Add(sum(terms) <= 1).OnlyEnforceIf(physical[aid, week, slot])
             total_used = sum(used_vars)
-            max_excess = max(0, PHYSICAL_NIGHTS_PER_WEEK - nominal_supply)
-            excess = model.NewIntVar(0, max_excess, f"excess__{location_id}__w{week}")
+            max_excess = max(0, slot_count - nominal_supply)
+            excess = model.NewIntVar(0, max_excess, f"excess__{loc}__w{week}")
             model.Add(excess >= total_used - nominal_supply)
             model.Add(excess >= 0)
             model.Add(excess <= total_used)
-            excess_by_location_week[location_id, week] = excess
+            excess_by_location_week[loc, week] = excess
             if scenario == "A":
                 model.Add(total_used <= nominal_supply)
                 model.Add(excess == 0)
@@ -534,85 +537,88 @@ def solve_schedule(
 
     pair_conflicts = 0
     pair_coshare_exemptions = 0
-    for i, a in enumerate(activity_ids):
-        for b in activity_ids[i + 1:]:
-            if not (closure[a] & closure[b]):
-                continue
-            can_coshare = _co_share_pair_allowed(
-                activity_access_type[a],
-                activity_access_type[b],
-                route[a],
-                route[b],
-            )
-            if can_coshare:
+    for a, b in combinations(activity_ids, 2):
+        sharing = _co_share_pair_allowed(activity_access_type[a], activity_access_type[b], route[a], route[b])
+        enters_closure = bool((route[a] & closure[b]) or (route[b] & closure[a]))
+        if enters_closure:
+            if sharing:
                 pair_coshare_exemptions += 1
                 for week in weeks:
-                    both = model.NewBoolVar(f"coshare__{a}__{b}__w{week}")
-                    model.Add(both <= scheduled[a, week])
-                    model.Add(both <= scheduled[b, week])
-                    model.Add(both >= scheduled[a, week] + scheduled[b, week] - 1)
-                    for night in physical_nights:
-                        model.Add(physical[a, week, night] == physical[b, week, night]).OnlyEnforceIf(both)
-                continue
-            pair_conflicts += 1
+                    for slot in slots:
+                        model.Add(physical[a, week, slot] == physical[b, week, slot]).OnlyEnforceIf(
+                            [scheduled[a, week], scheduled[b, week]]
+                        )
+            else:
+                pair_conflicts += 1
+                for week in weeks:
+                    model.Add(scheduled[a, week] + scheduled[b, week] <= 1)
+        if not sharing and (closure[a] & closure[b]):
             for week in weeks:
-                model.Add(scheduled[a, week] + scheduled[b, week] <= 1)
+                for slot in slots:
+                    model.Add(physical[a, week, slot] + physical[b, week, slot] <= 1)
 
-    eclo_window_start: Dict[str, cp_model.IntVar] = {}
+    activities_by_contract_type: Dict[Tuple[str, str], List[str]] = defaultdict(list)
+    for aid in activity_ids:
+        activities_by_contract_type[activity_contract[aid], activity_type[aid]].append(aid)
+
+    for (contract, atype), ids in activities_by_contract_type.items():
+        cap = _as_int(projects[contract].get("number_of_maximum_access_per_week"), f"{contract}.number_of_maximum_access_per_week")
+        workfronts = _as_int(projects[contract].get("number_of_workfronts"), f"{contract}.number_of_workfronts")
+        for week in weeks:
+            used = []
+            for slot in slots:
+                terms = [physical[aid, week, slot] for aid in ids]
+                busy = model.NewBoolVar(f"contract__{contract}__{atype}__w{week}__s{slot}")
+                model.AddMaxEquality(busy, terms)
+                model.Add(sum(terms) <= workfronts)
+                used.append(busy)
+            model.Add(sum(used) <= cap)
+
     if scenario == "C":
         all_lines = sorted({line for lines in affected_lines.values() for line in lines})
-        for line in all_lines:
-            eclo_window_start[line] = model.NewIntVar(1, max(1, horizon_weeks), f"eclo_window_start__{line}")
-        for activity_id in activity_ids:
+        window_start = {line: model.NewIntVar(1, horizon_weeks, f"eclo_window__{line}") for line in all_lines}
+        for aid in activity_ids:
             for week in weeks:
-                for line in affected_lines[activity_id]:
-                    window = eclo_window_start[line]
-                    model.Add(week >= window).OnlyEnforceIf(eclo[activity_id, week])
-                    model.Add(week <= window + 1).OnlyEnforceIf(eclo[activity_id, week])
+                for line in affected_lines[aid]:
+                    model.Add(window_start[line] <= week).OnlyEnforceIf(eclo[aid, week])
+                    model.Add(window_start[line] >= week - 1).OnlyEnforceIf(eclo[aid, week])
+
+    activities_by_contract: Dict[str, List[str]] = defaultdict(list)
+    for aid in activity_ids:
+        activities_by_contract[activity_contract[aid]].append(aid)
 
     contract_end_week: Dict[str, cp_model.IntVar] = {}
     contract_overrun_days: Dict[str, cp_model.IntVar] = {}
-    activities_by_contract: Dict[str, List[str]] = defaultdict(list)
-    for activity_id in activity_ids:
-        activities_by_contract[activity_contract[activity_id]].append(activity_id)
     horizon_end_day = horizon_weeks * 7 - 1
+    primary_terms = []
 
     for contract, ids in activities_by_contract.items():
-        end_var = model.NewIntVar(1, horizon_weeks, f"contract_end_week__{contract}")
-        model.AddMaxEquality(end_var, [end_week[a] for a in ids])
+        end_var = model.NewIntVar(1, horizon_weeks, f"contract_end__{contract}")
+        model.AddMaxEquality(end_var, [finish[aid] for aid in ids])
         contract_end_week[contract] = end_var
         planned_day = _date_day_index(_parse_date(projects[contract].get("planned_completion_date"), f"{contract}.planned_completion_date"), horizon_start)
-        overrun = model.NewIntVar(0, max(0, horizon_end_day - planned_day), f"contract_overrun_days__{contract}")
-        completion_day = 7 * end_var - 1
-        model.Add(overrun >= completion_day - planned_day)
-        model.Add(overrun >= 0)
+        max_late = max(0, horizon_end_day - planned_day)
+        overrun = model.NewIntVar(0, max_late, f"contract_overrun__{contract}")
+        model.AddMaxEquality(overrun, [0, 7 * end_var - 1 - planned_day])
         contract_overrun_days[contract] = overrun
         if scenario == "B":
-            model.Add(completion_day <= planned_day)
             model.Add(overrun == 0)
+        if scenario in {"A", "C"}:
+            tier = _as_int(projects[contract].get("contract_priority"), f"{contract}.contract_priority")
+            weight10 = 0
+            for aid in ids:
+                ap = _as_int(activities[aid].get("activity_priority"), f"{aid}.activity_priority")
+                weight10 += (CONTRACT_WEIGHT10.get(tier, 10) * ACTIVITY_MULT10.get(ap, 10)) // 10
+            primary_terms.append(weight10 * overrun)
 
-    activity_overrun_days: Dict[str, cp_model.IntVar] = {}
-    for activity_id in activity_ids:
-        contract = activity_contract[activity_id]
-        planned_day = _date_day_index(_parse_date(projects[contract].get("planned_completion_date"), f"{contract}.planned_completion_date"), horizon_start)
-        overrun = model.NewIntVar(0, max(0, horizon_end_day - planned_day), f"activity_overrun_days__{activity_id}")
-        model.Add(overrun >= 7 * end_week[activity_id] - 1 - planned_day)
-        model.Add(overrun >= 0)
-        activity_overrun_days[activity_id] = overrun
-
-    objective_terms = []
-    if scenario in {"A", "C"}:
-        for activity_id, activity in activities.items():
-            contract = activity_contract[activity_id]
-            contract_priority = _as_int(projects[contract].get("contract_priority"), f"{contract}.contract_priority")
-            activity_priority = _as_int(activity.get("activity_priority"), f"{activity_id}.activity_priority")
-            coefficient = PRIORITY_BASE_WEIGHT.get(contract_priority, 1) * (10 + ACTIVITY_PRIORITY_TENTHS.get(activity_priority, 0))
-            objective_terms.append(coefficient * activity_overrun_days[activity_id])
     if scenario in {"B", "C"}:
-        objective_terms.extend(70 * var for var in excess_by_location_week.values())
-        objective_terms.extend(50 * eclo[a, w] for a in activity_ids for w in weeks)
-    objective_terms.extend(scheduled[a, w] for a in activity_ids for w in weeks)
-    model.Minimize(sum(objective_terms))
+        primary_terms.extend(70 * var for var in excess_by_location_week.values())
+        primary_terms.extend(50 * eclo[aid, week] for aid in activity_ids for week in weeks)
+
+    primary = sum(primary_terms) if primary_terms else 0
+    secondary = sum(finish.values())
+    scale = len(activity_ids) * horizon_weeks + 1
+    model.Minimize(primary * scale + secondary)
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(time_limit_seconds)
@@ -635,153 +641,79 @@ def solve_schedule(
                 "pair_conflicts": pair_conflicts,
                 "pair_coshare_exemptions": pair_coshare_exemptions,
             },
-            "message": "No feasible solution was found within the model/time limit. Check the hard constraints, horizon, and hidden-instance data.",
+            "message": "No feasible solution was found within the model/time limit.",
         }
 
-    schedule_access: List[Dict[str, Any]] = []
-    chosen_physical_night: Dict[Tuple[str, int], int] = {}
-    for activity_id in activity_ids:
-        contract = activity_contract[activity_id]
-        cap = _as_int(projects[contract].get("number_of_maximum_access_per_week"), f"{contract}.number_of_maximum_access_per_week")
-        seq = 0
+    chosen_slot: Dict[Tuple[str, int], int] = {}
+    active_by_week: Dict[int, List[str]] = defaultdict(list)
+    for aid in activity_ids:
         for week in weeks:
-            if solver.Value(scheduled[activity_id, week]) != 1:
+            if solver.Value(scheduled[aid, week]) != 1:
                 continue
-            seq += 1
-            night = next(n for n in physical_nights if solver.Value(physical[activity_id, week, n]) == 1)
-            chosen_physical_night[activity_id, week] = night
-            access_night = next(n for n in range(1, cap + 1) if solver.Value(local_access[activity_id, week, n]) == 1)
+            slot = next(s for s in slots if solver.Value(physical[aid, week, s]) == 1)
+            chosen_slot[aid, week] = slot
+            active_by_week[week].append(aid)
+
+    used_contract_slots: Dict[Tuple[str, str, int], List[int]] = {}
+    for (contract, atype), ids in activities_by_contract_type.items():
+        for week in weeks:
+            values = sorted({chosen_slot[aid, week] for aid in ids if (aid, week) in chosen_slot})
+            used_contract_slots[contract, atype, week] = values
+
+    schedule_access: List[Dict[str, Any]] = []
+    counters: Dict[str, int] = defaultdict(int)
+    for week in weeks:
+        for aid in sorted(active_by_week.get(week, [])):
+            counters[aid] += 1
+            slot = chosen_slot[aid, week]
+            key = (activity_contract[aid], activity_type[aid], week)
+            access_night = used_contract_slots[key].index(slot) + 1
             schedule_access.append({
-                "activity_id": activity_id,
-                "access_seq": seq,
+                "activity_id": aid,
+                "access_seq": counters[aid],
                 "week": week,
-                "eclo": int(solver.Value(eclo[activity_id, week])),
+                "eclo": int(solver.Value(eclo[aid, week])),
                 "access_night": access_night,
             })
 
-    location_week_nights: Dict[Tuple[str, int], Set[int]] = defaultdict(set)
-    for access in schedule_access:
-        activity_id, week = str(access["activity_id"]), int(access["week"])
-        night = chosen_physical_night[activity_id, week]
-        for location_id in route[activity_id]:
-            location_week_nights[location_id, week].add(night)
-
-    local_group: Dict[Tuple[str, int, int], str] = {}
-    for (location_id, week), nights in location_week_nights.items():
-        for index, night in enumerate(sorted(nights), start=1):
-            local_group[location_id, week, night] = f"b{index}"
-
     schedule_occupancy: List[Dict[str, Any]] = []
-    for access in schedule_access:
-        activity_id, week = str(access["activity_id"]), int(access["week"])
-        night = chosen_physical_night[activity_id, week]
-        for location_id in sorted(route[activity_id]):
+    for row in schedule_access:
+        aid = str(row["activity_id"])
+        week = int(row["week"])
+        group = f"p{chosen_slot[aid, week] + 1}"
+        for loc in sorted(route[aid]):
             schedule_occupancy.append({
-                "activity_id": activity_id,
+                "activity_id": aid,
                 "week": week,
-                "location_id": location_id,
-                "co_share_group": local_group[location_id, week, night],
+                "location_id": loc,
+                "co_share_group": group,
             })
 
     internal_hard_rule_errors: List[str] = []
+    groups: Dict[Tuple[str, int, str], Set[str]] = defaultdict(set)
+    by_week: Dict[int, Set[str]] = defaultdict(set)
+    for row in schedule_occupancy:
+        groups[str(row["location_id"]), int(row["week"]), str(row["co_share_group"])].add(str(row["activity_id"]))
+        by_week[int(row["week"])].add(str(row["activity_id"]))
 
-    for i, a in enumerate(activity_ids):
-        for b in activity_ids[i + 1:]:
-            if not (closure[a] & closure[b]):
-                continue
-            can_coshare = _co_share_pair_allowed(activity_access_type[a], activity_access_type[b], route[a], route[b])
-            for week in weeks:
-                if solver.Value(scheduled[a, week]) != 1 or solver.Value(scheduled[b, week]) != 1:
-                    continue
-                if can_coshare and chosen_physical_night[a, week] == chosen_physical_night[b, week]:
-                    continue
-                internal_hard_rule_errors.append(f"closure:{week}:{a}:{b}")
-
-    for location_id, nominal_supply in supply.items():
-        ids = activities_at_location.get(location_id, [])
-        if not ids:
-            continue
-        for week in weeks:
-            by_night: Dict[int, List[str]] = defaultdict(list)
-            for a in ids:
-                if solver.Value(scheduled[a, week]) == 1:
-                    by_night[chosen_physical_night[a, week]].append(a)
-            used = len(by_night)
-            if scenario == "A" and used > nominal_supply:
-                internal_hard_rule_errors.append(f"capacity:{location_id}:{week}:{used}>{nominal_supply}")
-            if scenario == "C" and used > nominal_supply + 1:
-                internal_hard_rule_errors.append(f"capacity:{location_id}:{week}:{used}>{nominal_supply + 1}")
-            for night, members in by_night.items():
-                pm = sum(activity_access_type[a] == "PM" for a in members)
-                pc = sum(activity_access_type[a] == "PC" for a in members)
-                c = sum(activity_access_type[a] == "C" for a in members)
-                if pm > 1 or pc > 1 or pm + pc > 1 or c + pc + 4 * pm > 4:
-                    internal_hard_rule_errors.append(f"mix:{location_id}:{week}:d{night}")
-
-    for activity_id, activity in activities.items():
-        active_weeks = [week for week in weeks if solver.Value(scheduled[activity_id, week]) == 1]
-        if not active_weeks:
-            internal_hard_rule_errors.append(f"workload:{activity_id}:missing")
-            continue
-        if min(active_weeks) < earliest_week[activity_id]:
-            internal_hard_rule_errors.append(f"planned_start:{activity_id}")
-        required = 2 * _as_int(activity.get("total_accesses"), f"{activity_id}.total_accesses")
-        delivered = sum(
-            2 * int(solver.Value(normal[activity_id, week])) + 3 * int(solver.Value(eclo[activity_id, week]))
-            for week in weeks
-        )
-        if delivered < required:
-            internal_hard_rule_errors.append(f"workload:{activity_id}:{delivered}<{required}")
-
-    for successor_id, activity in activities.items():
-        predecessor_id = _clean(activity.get("predecessor_activity_id"))
-        if predecessor_id and solver.Value(start_week[successor_id]) <= solver.Value(end_week[predecessor_id]):
-            internal_hard_rule_errors.append(f"predecessor:{predecessor_id}:{successor_id}")
-
-    for (contract, activity_type), ids in activities_by_contract_type.items():
-        cap = _as_int(projects[contract].get("number_of_maximum_access_per_week"), f"{contract}.number_of_maximum_access_per_week")
-        workfronts = _as_int(projects[contract].get("number_of_workfronts"), f"{contract}.number_of_workfronts")
-        for week in weeks:
-            used_access_nights = set()
-            counts: Dict[int, int] = defaultdict(int)
-            for a in ids:
-                if solver.Value(scheduled[a, week]) != 1:
-                    continue
-                n = next(
-                    x for x in range(1, cap + 1)
-                    if solver.Value(local_access[a, week, x]) == 1
+    components = _possession_components(groups, by_week)
+    for (week, _root), members in components.items():
+        combined_closure = set().union(*(closure[aid] for aid in members))
+        for aid in sorted(by_week[week] - members):
+            overlap = route[aid] & combined_closure
+            if overlap:
+                internal_hard_rule_errors.append(
+                    f"closure:{week}:{aid}:inside:{','.join(sorted(members))}:{','.join(sorted(overlap)[:4])}"
                 )
-                used_access_nights.add(n)
-                counts[n] += 1
-            if len(used_access_nights) > cap:
-                internal_hard_rule_errors.append(f"allocation:{contract}:{activity_type}:{week}")
-            for n, count in counts.items():
-                if count > workfronts:
-                    internal_hard_rule_errors.append(f"workfront:{contract}:{activity_type}:{week}:{n}")
-
-    if scenario == "A":
-        for a in activity_ids:
-            for week in weeks:
-                if solver.Value(eclo[a, week]) == 1:
-                    internal_hard_rule_errors.append(f"eclo:A:{a}:{week}")
-
-    if scenario == "C":
-        eclo_weeks_by_line: Dict[str, Set[int]] = defaultdict(set)
-        for a in activity_ids:
-            for week in weeks:
-                if solver.Value(eclo[a, week]) == 1:
-                    for line in affected_lines[a]:
-                        eclo_weeks_by_line[line].add(week)
-        for line, eweeks in eclo_weeks_by_line.items():
-            if eweeks and max(eweeks) - min(eweeks) > 1:
-                internal_hard_rule_errors.append(f"eclo_window:{line}:{sorted(eweeks)}")
 
     results_rows: List[Dict[str, Any]] = []
     for contract in sorted(projects):
-        if contract not in contract_end_week:
-            continue
-        completion_week = int(solver.Value(contract_end_week[contract]))
-        completion_date = _week_end_date(completion_week, horizon_start)
+        ids = activities_by_contract.get(contract, [])
+        if not ids:
+            completion_date = horizon_start
+        else:
+            completion_week = int(solver.Value(contract_end_week[contract]))
+            completion_date = _week_end_date(completion_week, horizon_start)
         planned_date = _parse_date(projects[contract].get("planned_completion_date"), f"{contract}.planned_completion_date")
         results_rows.append({
             "scenario": scenario,
@@ -791,14 +723,15 @@ def solve_schedule(
         })
 
     predecessor_checks = []
-    for activity_id, activity in activities.items():
-        predecessor = _clean(activity.get("predecessor_activity_id"))
-        if predecessor:
+    for aid in activity_ids:
+        pred = _clean(activities[aid].get("predecessor_activity_id"))
+        if pred:
+            successor_weeks = [week for week in weeks if solver.Value(scheduled[aid, week]) == 1]
             predecessor_checks.append({
-                "predecessor": predecessor,
-                "predecessor_last_week": int(solver.Value(end_week[predecessor])),
-                "successor": activity_id,
-                "successor_first_week": int(solver.Value(start_week[activity_id])),
+                "predecessor": pred,
+                "predecessor_last_week": int(solver.Value(finish[pred])),
+                "successor": aid,
+                "successor_first_week": min(successor_weeks),
             })
 
     return {
@@ -826,16 +759,17 @@ def solve_schedule(
             "solver_version": SOLVER_VERSION,
             "horizon_start": horizon_start.isoformat(),
             "horizon_weeks": horizon_weeks,
-            "physical_nights_per_week": PHYSICAL_NIGHTS_PER_WEEK,
+            "slot_count": slot_count,
         },
     }
+
 
 def _main() -> None:
     parser = argparse.ArgumentParser(description="NebulaX PS1 OR-Tools railway access solver")
     parser.add_argument("--data-dir", required=True, help="Folder containing 01_LINES.csv ... 08_ACTIVITY_DETAILS.csv")
     parser.add_argument("--scenario", choices=["A", "B", "C", "a", "b", "c"], default="A")
     parser.add_argument("--output-dir", default="submission", help="Folder to write the three submission CSVs")
-    parser.add_argument("--time-limit", type=float, default=30.0)
+    parser.add_argument("--time-limit", type=float, default=60.0)
     parser.add_argument("--workers", type=int, default=1)
     args = parser.parse_args()
     data = load_instance(args.data_dir)
@@ -855,6 +789,7 @@ def _main() -> None:
     print("files         :")
     for name, path in files.items():
         print(f"  {name}: {path}")
+
 
 if __name__ == "__main__":
     _main()
