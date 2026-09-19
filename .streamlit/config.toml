@@ -8,8 +8,12 @@ base = "dark"
 primaryColor = "#3b82f6"
 backgroundColor = "#0f1115"
 secondaryBackgroundColor = "#181b21"
-textColor = "#e8eaee"
+textColor = "#e8eaea"
 font = "sans-serif"
 
 [server]
+port = 8080
+address = "0.0.0.0"
 headless = true
+enableCORS = false
+enableXsrfProtection = false
