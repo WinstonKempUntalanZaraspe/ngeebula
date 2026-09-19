@@ -26,7 +26,7 @@ REQUIRED_TABLES = ("sectors", "location_supply", "buffer_location", "parameters"
 PRIORITY_BASE_WEIGHT = {1: 100, 2: 10, 3: 1}
 ACTIVITY_PRIORITY_TENTHS = {1: 3, 2: 2, 3: 0}
 PHYSICAL_NIGHTS_PER_WEEK = 7
-SOLVER_VERSION = "hard-rules-v10"
+SOLVER_VERSION = "hard-rules-v11"
 
 def _clean(value: Any) -> str:
     return "" if value is None else str(value).strip()
@@ -252,11 +252,36 @@ def _activity_route_and_closure(
         closure |= _locations_for_sector_rows(buffer_rows, start_line, start_bound)
     if nature == "live":
         closure |= {_swap_bound(loc) for loc in list(closure)}
-        if any(_parse_track_location(loc)[2] in interchange_hubs for loc in closure):
-            for location_id in all_location_ids:
-                _, line, middle, _ = _parse_track_location(location_id)
-                if line != start_line and middle in interchange_hubs:
-                    closure.add(location_id)
+
+        touches_interchange = False
+        for loc in closure:
+            kind, _, middle, _ = _parse_track_location(loc)
+            if middle in interchange_hubs:
+                touches_interchange = True
+                break
+            if kind == "SEC":
+                parts = middle.split("_")
+                if any(part in interchange_hubs for part in parts):
+                    touches_interchange = True
+                    break
+
+        if touches_interchange:
+            for other_line, other_rows_raw in sectors_by_line.items():
+                if other_line == start_line:
+                    continue
+                other_rows = list(other_rows_raw)
+                corridor_indexes = []
+                for idx, row in enumerate(other_rows):
+                    from_station = _clean(row.get("from_station_id"))
+                    to_station = _clean(row.get("to_station_id"))
+                    if from_station in interchange_hubs and to_station in interchange_hubs:
+                        corridor_indexes.append(idx)
+                for idx in corridor_indexes:
+                    lo = max(0, idx - buffer_size)
+                    hi = min(len(other_rows) - 1, idx + buffer_size)
+                    expanded_rows = other_rows[lo:hi + 1]
+                    closure |= _locations_for_sector_rows(expanded_rows, other_line, start_bound)
+                    closure |= _locations_for_sector_rows(expanded_rows, other_line, "WB" if start_bound == "EB" else "EB")
     closure &= all_location_ids
     route &= all_location_ids
     if not route:
