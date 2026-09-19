@@ -26,7 +26,7 @@ REQUIRED_TABLES = ("sectors", "location_supply", "buffer_location", "parameters"
 PRIORITY_BASE_WEIGHT = {1: 100, 2: 10, 3: 1}
 ACTIVITY_PRIORITY_TENTHS = {1: 3, 2: 2, 3: 0}
 PHYSICAL_NIGHTS_PER_WEEK = 7
-SOLVER_VERSION = "hard-rules-v9"
+SOLVER_VERSION = "hard-rules-v10"
 
 def _clean(value: Any) -> str:
     return "" if value is None else str(value).strip()
@@ -249,7 +249,7 @@ def _activity_route_and_closure(
             if low - buffer_size <= int(r["seq"]) <= high + buffer_size
             and not (low <= int(r["seq"]) <= high)
         ]
-        closure |= {f"{_clean(r['sector_id'])}:{start_bound}" for r in buffer_rows}
+        closure |= _locations_for_sector_rows(buffer_rows, start_line, start_bound)
     if nature == "live":
         closure |= {_swap_bound(loc) for loc in list(closure)}
         if any(_parse_track_location(loc)[2] in interchange_hubs for loc in closure):
@@ -513,18 +513,25 @@ def solve_schedule(
         for b in activity_ids[i + 1:]:
             if not (closure[a] & closure[b]):
                 continue
-            if _co_share_pair_allowed(
+            can_coshare = _co_share_pair_allowed(
                 activity_access_type[a],
                 activity_access_type[b],
                 route[a],
                 route[b],
-            ):
+            )
+            if can_coshare:
                 pair_coshare_exemptions += 1
+                for week in weeks:
+                    both = model.NewBoolVar(f"coshare__{a}__{b}__w{week}")
+                    model.Add(both <= scheduled[a, week])
+                    model.Add(both <= scheduled[b, week])
+                    model.Add(both >= scheduled[a, week] + scheduled[b, week] - 1)
+                    for night in physical_nights:
+                        model.Add(physical[a, week, night] == physical[b, week, night]).OnlyEnforceIf(both)
                 continue
             pair_conflicts += 1
             for week in weeks:
-                for night in physical_nights:
-                    model.Add(physical[a, week, night] + physical[b, week, night] <= 1)
+                model.Add(scheduled[a, week] + scheduled[b, week] <= 1)
 
     eclo_window_start: Dict[str, cp_model.IntVar] = {}
     if scenario == "C":
@@ -657,13 +664,13 @@ def solve_schedule(
         for b in activity_ids[i + 1:]:
             if not (closure[a] & closure[b]):
                 continue
-            if _co_share_pair_allowed(activity_access_type[a], activity_access_type[b], route[a], route[b]):
-                continue
+            can_coshare = _co_share_pair_allowed(activity_access_type[a], activity_access_type[b], route[a], route[b])
             for week in weeks:
                 if solver.Value(scheduled[a, week]) != 1 or solver.Value(scheduled[b, week]) != 1:
                     continue
-                if chosen_physical_night[a, week] == chosen_physical_night[b, week]:
-                    internal_hard_rule_errors.append(f"closure:{week}:{a}:{b}")
+                if can_coshare and chosen_physical_night[a, week] == chosen_physical_night[b, week]:
+                    continue
+                internal_hard_rule_errors.append(f"closure:{week}:{a}:{b}")
 
     for location_id, nominal_supply in supply.items():
         ids = activities_at_location.get(location_id, [])
