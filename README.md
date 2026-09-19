@@ -17,7 +17,12 @@ The core optimization engine follows a rigorous, multi-stage architecture powere
   * **Live 750V Mirroring & Interchange Rules:** Third-rail power cuts mirror to the opposite bound ($EB \leftrightarrow WB$) and cross over to the adjacent line's interchange tunnel/platforms at Hubs H01 and H02.
   * **Weekly Allocation & Workfronts:** Respects flat per-contract weekly caps (`number_of_maximum_access_per_week` — 2 for Live, 3 for others) and concurrent workfront limits.
   * **Predecessor Precedence:** Enforces that successor activities start strictly after predecessor completion.
-
+* **4. Scenario Objective Switchboard**
+  * **Scenario A (Strict Supply, Flexible Schedule):** Track capacity limits are rigid (zero excess capacity permitted) and ECLO is hard-forbidden. Optimizes to minimize priority-weighted project completion overruns (Priority 1 > 2 > 3)[cite: 4, 5].
+  * **Scenario B (Strict Schedule, Flexible Supply):** Planned completion dates are rigid (zero overrun permitted). Optimizes to minimize additional access-nights above nominal supply ($7 \times \text{excess}$) plus ECLO penalties ($5 \times \text{eclo}$)[cite: 4, 5].
+  * **Scenario C (Elastic Trade-Off):** Combines priority-weighted overruns, excess access-nights (with a narrow allowance up to 1 excess per location-week before hard-failing), and ECLO penalties within a 2-week continuous window[cite: 4, 5].
+* **5. Solver Execution & Export**
+  * Executes the underlying CP-SAT optimization engine to return optimal or feasible status results, automatically formatting and exporting the required output files[cite: 4, 5].
 
 ## 3. Features, Functions, & How It Works
 The application integrates the solver pipeline into a streamlined, user-facing workflow:
