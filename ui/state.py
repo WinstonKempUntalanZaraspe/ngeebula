@@ -139,7 +139,8 @@ def init() -> None:
     st.session_state.setdefault("problem", None)
     st.session_state.setdefault("uploader_nonce", 0)
     st.session_state.setdefault("scenario", "A")
-    st.session_state.setdefault("time_limit", TIME_LIMIT_DEFAULT)
+    # "time_limit" is owned by the number_input widget in ui/rules.py (key +
+    # constant default). Do not seed or assign it here; read it with .get().
     st.session_state.setdefault("job", None)           # the finished run_pipeline body
     st.session_state.setdefault("csvs", {})            # output file name -> bytes
     st.session_state.setdefault("selected_activity", None)
@@ -167,7 +168,7 @@ def reset() -> None:
     """Start over with new files."""
     clear_files()
     st.session_state["scenario"] = "A"
-    st.session_state["time_limit"] = TIME_LIMIT_DEFAULT
+    st.session_state.pop("time_limit", None)  # widget recreates it at its default
     st.session_state["job"] = None
     st.session_state["csvs"] = {}
     st.session_state["selected_activity"] = None

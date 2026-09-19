@@ -234,7 +234,7 @@ def _run_solve(folder: Path, scenario: str, time_limit: int) -> Dict[str, Any]:
 def render_running() -> None:
     """Do the solve, keep the result, then move to the screen that fits it."""
     scenario = st.session_state["scenario"]
-    time_limit = int(st.session_state["time_limit"])
+    time_limit = int(st.session_state.get("time_limit", state.TIME_LIMIT_DEFAULT))
     files = st.session_state["files"]
 
     if len(files) != len(INSTANCE_FILES):

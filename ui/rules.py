@@ -16,6 +16,7 @@ from ui.state import (
     ECLO_POINTS,
     EXCESS_POINTS,
     LATE_POINTS,
+    TIME_LIMIT_DEFAULT,
     TIME_LIMIT_MAX,
     TIME_LIMIT_MIN,
 )
@@ -127,11 +128,15 @@ def render() -> None:
         "More time usually means a lower score. It stops early if it proves the answer "
         "cannot be beaten."
     )
-    st.session_state.setdefault("time_limit", 60)
+    # Standard Streamlit pattern: a constant default on the widget, a key so the
+    # user's choice survives reruns, and NOTHING else ever assigns to that key
+    # (Start over pops it instead). Passing a session-state value as `value=`,
+    # or pre-seeding the key, made the +/- buttons snap back on the first click.
     st.number_input(
         "Seconds",
         min_value=TIME_LIMIT_MIN,
         max_value=TIME_LIMIT_MAX,
+        value=TIME_LIMIT_DEFAULT,
         step=5,
         width=240,
         help=f"Between {TIME_LIMIT_MIN} and {TIME_LIMIT_MAX}. 60 is a good default for an instance this size.",
