@@ -127,17 +127,15 @@ def render() -> None:
         "More time usually means a lower score. It stops early if it proves the answer "
         "cannot be beaten."
     )
-    st.session_state["time_limit"] = int(
-        st.number_input(
-            "Seconds",
-            min_value=TIME_LIMIT_MIN,
-            max_value=TIME_LIMIT_MAX,
-            value=int(st.session_state["time_limit"]),
-            step=5,
-            width=240,
-            help=f"Between {TIME_LIMIT_MIN} and {TIME_LIMIT_MAX}. 60 is a good default for an instance this size.",
-        )
-        or TIME_LIMIT_MIN
+    st.session_state.setdefault("time_limit", 60)
+    st.number_input(
+        "Seconds",
+        min_value=TIME_LIMIT_MIN,
+        max_value=TIME_LIMIT_MAX,
+        step=5,
+        width=240,
+        help=f"Between {TIME_LIMIT_MIN} and {TIME_LIMIT_MAX}. 60 is a good default for an instance this size.",
+        key="time_limit",
     )
 
     st.space("medium")

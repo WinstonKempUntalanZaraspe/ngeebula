@@ -1,4 +1,4 @@
-"""Track Access Scheduler — the Streamlit front end.
+"""RailWise IQ — the Streamlit front end.
 
 This is the file Streamlit Community Cloud runs. It is a three-step wizard:
 load the 8 planning files, choose the rulebook, read the schedule. The solving
@@ -17,10 +17,85 @@ import streamlit as st
 from ui import results, rules, run, state, theme, upload
 
 st.set_page_config(
-    page_title="Track Access Scheduler",
+    page_title="RailWise IQ",
     page_icon="🚆",
     layout="wide",
 )
+
+# --------------------------------------------------------------------------- #
+# responsive layout
+# --------------------------------------------------------------------------- #
+# One CSS block for the whole app. Desktop keeps Streamlit's own layout; the
+# media queries below take over for a tablet (~768-1024 px) and a phone
+# (~375-430 px), where a works controller is using a thumb, not a mouse.
+RESPONSIVE_CSS = """
+<style>
+/* --- desktop baseline ------------------------------------------------- */
+html, body, [data-testid="stAppViewContainer"] { font-size: 17px; }
+[data-testid="stPlotlyChart"] { overflow-x: auto; }
+[data-testid="stPlotlyChart"] > div { min-width: 320px; }
+
+/* --- tablet and below: stop side-by-side columns squeezing ------------- */
+@media (max-width: 900px) {
+  [data-testid="stHorizontalBlock"] {
+    flex-wrap: wrap !important;
+    gap: 0.75rem !important;
+  }
+  [data-testid="stHorizontalBlock"] > [data-testid="column"],
+  [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+    min-width: 100% !important;
+    flex: 1 1 100% !important;
+    width: 100% !important;
+  }
+  .stButton > button, .stDownloadButton > button, [data-testid="stBaseButton-secondary"],
+  [data-testid="stBaseButton-primary"] {
+    min-height: 48px;
+  }
+}
+
+/* --- phone ------------------------------------------------------------- */
+@media (max-width: 640px) {
+  html, body, [data-testid="stAppViewContainer"] { font-size: 16px; }
+  [data-testid="stAppViewContainer"] .block-container {
+    padding-left: 0.75rem !important;
+    padding-right: 0.75rem !important;
+    padding-top: 2.5rem !important;
+  }
+  /* a button inside a horizontal container is a flex item: give it the row */
+  [data-testid="stHorizontalBlock"] > [data-testid="stElementContainer"]:has(.stButton),
+  [data-testid="stHorizontalBlock"] > [data-testid="stElementContainer"]:has(.stDownloadButton),
+  [data-testid="stHorizontalBlock"] > [data-testid="stElementContainer"]:has(.stFormSubmitButton) {
+    flex: 1 1 100% !important;
+    min-width: 100% !important;
+    width: 100% !important;
+  }
+  .stButton, .stDownloadButton, .stFormSubmitButton {
+    width: 100% !important;
+    flex: 1 1 100% !important;
+  }
+  .stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
+    width: 100% !important;
+    min-height: 48px !important;
+    font-size: 16px !important;
+  }
+  /* big enough to hit: inputs, tabs, expander headers */
+  .stSelectbox div[data-baseweb="select"] > div,
+  .stMultiSelect div[data-baseweb="select"] > div,
+  .stNumberInput input, .stTextInput input { min-height: 44px; }
+  [data-testid="stTabs"] button { min-height: 44px; padding: 0 0.9rem; }
+  [data-testid="stExpander"] summary { min-height: 44px; font-size: 16px; }
+  /* the three step stations sit one under the other, still readable */
+  [data-testid="stHorizontalBlock"] { gap: 0.25rem !important; }
+  [data-testid="stMetricValue"] { font-size: 1.5rem; }
+  /* explain panel body text stays at a readable 16 px */
+  [data-testid="stExpander"] p, [data-testid="stMarkdownContainer"] p,
+  [data-testid="stMarkdownContainer"] li { font-size: 16px; }
+  h1 { font-size: 1.6rem !important; }
+  h2 { font-size: 1.3rem !important; }
+}
+</style>
+"""
+st.markdown(RESPONSIVE_CSS, unsafe_allow_html=True)
 
 state.init()
 

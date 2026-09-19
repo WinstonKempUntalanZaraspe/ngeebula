@@ -115,14 +115,21 @@ def render_gantt(
     kinds: list[str] = []  # "contract" | "job"
     payload: list[dict[str, Any]] = []
 
+    # On a narrow screen the week columns need every pixel, so the row names
+    # down the left drop to the short form ("C012 · P1 · 14d late").
+    compact = len(weeks) * 26 > 700
+
     for contract in contracts:
         number = text(contract.get("contract_number"))
         priority = num(contract.get("contract_priority"))
         jobs = idx.activities_by_contract.get(number, [])
         late_days, late_text = late_label(idx.result_by_contract.get(number))
-        labels.append(
-            f"P{priority or '?'} · {number} · {len(jobs)} jobs · {late_text}"
-        )
+        if compact:
+            labels.append(f"{number} · P{priority or '?'} · {late_text}")
+        else:
+            labels.append(
+                f"P{priority or '?'} · {number} · {len(jobs)} jobs · {late_text}"
+            )
         kinds.append("contract")
         payload.append(
             {
@@ -140,10 +147,13 @@ def render_gantt(
             for job in jobs:
                 activity_id = text(job.get("activity_id"))
                 nights = num(job.get("total_accesses"))
-                labels.append(
-                    f"     {activity_id} · {nights}"
-                    f" {'night' if nights == 1 else 'nights'}"
-                )
+                if compact:
+                    labels.append(f"     {activity_id} · {nights}n")
+                else:
+                    labels.append(
+                        f"     {activity_id} · {nights}"
+                        f" {'night' if nights == 1 else 'nights'}"
+                    )
                 kinds.append("job")
                 payload.append(
                     {

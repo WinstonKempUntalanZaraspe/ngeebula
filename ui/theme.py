@@ -129,14 +129,22 @@ def _switch() -> None:
 def header() -> None:
     title_area, switch_area = st.columns([5, 2], gap="medium", vertical_alignment="top")
     with title_area:
-        st.title("Track Access Scheduler")
-        st.caption(
-            "Plans which contractor works on which stretch of track, each week, "
-            "without breaking a safety rule or a deadline more than it has to."
-        )
+        st.title("RailWise IQ")
+        st.caption("Track access scheduling assistant for SMRT works controllers")
     with switch_area:
         with st.container(horizontal=True, horizontal_alignment="right"):
             _switch()
+    with st.expander("What RailWise IQ does"):
+        st.write(
+            "RailWise IQ assists SMRT personnel by generating safe, optimised "
+            "track-access schedules. At its core it uses Google OR-Tools CP-SAT "
+            "constraint optimisation to assign works to suitable maintenance "
+            "nights, while respecting safety buffers, worksite conflicts, route "
+            "overlaps, access requirements, precedence constraints, shared "
+            "resources and other operational rules. The interface is designed so "
+            "personnel can read the schedule quickly and understand why the "
+            "solver placed each job where it did."
+        )
 
 
 def step_train(step: int) -> None:
